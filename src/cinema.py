@@ -92,13 +92,14 @@ KEYS = [
     dict(t=tm(24.5), focus=(320, 313), zoom=1.3, pitch=0, yaw=0, roll=0, ease="in"),   # it comes back square
     dict(t=tm(24.75) + .3, focus=(320, 300), zoom=1.0, pitch=0, yaw=0, roll=0, ease="out"),  # burst
     # the soul heads across the sheet for FIGHT with the living ink closing round
-    # it: follow it down to the corner, pushing in slowly - all the way in only
-    # on the cut, then pull back
+    # it: follow it down to the button's right edge, pushing in slowly - all the
+    # way in only on the cut, then pull back (same framing on the soul as when it
+    # walked onto the button's left end)
     dict(t=C.WALK_T, focus=(290, 320), zoom=1.04, pitch=0, yaw=0, roll=0),
-    dict(t=tm(26.5), focus=(195, 385), zoom=1.16, pitch=0, yaw=0, roll=0),
-    dict(t=C.PRESS_T - .1, focus=(105, 410), zoom=1.36, pitch=0, yaw=0, roll=0),
-    dict(t=C.PRESS_T, focus=(68, 432), zoom=1.7, pitch=0, yaw=0, roll=0, ease="in"),
-    dict(t=C.PRESS_T + .2, focus=(66, 434), zoom=1.74, pitch=0, yaw=0, roll=0, ease="linear"),
+    dict(t=tm(26.5), focus=(245, 335), zoom=1.16, pitch=0, yaw=0, roll=0),
+    dict(t=C.PRESS_T - .1, focus=(204, 404), zoom=1.36, pitch=0, yaw=0, roll=0),
+    dict(t=C.PRESS_T, focus=(170, 430), zoom=1.7, pitch=0, yaw=0, roll=0, ease="in"),
+    dict(t=C.PRESS_T + .2, focus=(168, 432), zoom=1.74, pitch=0, yaw=0, roll=0, ease="linear"),
     dict(t=tm(28.5), focus=(320, 240), zoom=1.0, pitch=0, yaw=0, roll=0, ease="out"),
 ]
 

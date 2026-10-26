@@ -51,26 +51,30 @@ CANVAS = (lambda: (CANVAS_SET, tm(28.5)))      # from here on the arena is a can
 # the rest after the cube (M25-M28.5): the canvas wraps the buttons too. The burst
 # throws the soul a little left of the middle; from there it heads for FIGHT the
 # whole time (arrow keys held, 8 directions - no turn is given) while the ink of
-# the burst comes alive, rings it and closes in on it beat by beat. It reaches the
-# button only on the M28 downbeat (the hardest hit of the long hold), just as the
-# ring is about to touch it: one press, and one slash cuts the whole ring
+# the burst comes alive, rings it and closes in on it beat by beat. Touching a
+# button's edge is enough to trigger it: the soul grazes FIGHT's right edge only
+# on the M28 downbeat (the hardest hit of the long hold), just as the ring is
+# about to touch it: one press, and one slash cuts the whole ring
 REST_RECT = (-150, 226, 790, 630)              # the sheet runs on past the screen (scene.overscan)
-FIGHT_SOUL = (47, 453)                          # the soul on the FIGHT button
+# where the soul touches FIGHT: walking straight down-left from KNOCK_TO, the
+# first spot where the heart overlaps fight1.png (at 32,432) - by one pixel, on
+# the middle of its right edge (the step before, it is still clear of it)
+FIGHT_SOUL = (149, 451)
 PRESS_T = tm(28)
 DEEP_T = tm(22.75) - .08     # the camera is deepest inside the canvas: the rectangle is there from now on (cinema)
 KNOCK_DUR = .4
 KNOCK_TO = (270, 330)                           # thrown just left of the middle
 WALK_T = tm(24.75) + .42
 _WALK_STEPS = int(PRESS_T * 60) - int(round(WALK_T * 60))
-# from that close it walks a little slower than UT's 2 px a frame, so that it
-# still gets there only on PRESS_T
+# from that close it walks much slower than UT's 2 px a frame (about 0.59), so
+# that it still touches the button only on PRESS_T
 WALK_SPEED = max(abs(KNOCK_TO[0] - FIGHT_SOUL[0]), abs(KNOCK_TO[1] - FIGHT_SOUL[1])) / _WALK_STEPS
 WALK_ARRIVE = (int(round(WALK_T * 60)) + _WALK_STEPS) / 60
 SOUL_SCRIPT = [dict(kind="fly", t0=tm(24.75), dur=KNOCK_DUR, to=KNOCK_TO, hold=WALK_T),
                dict(kind="walk", t0=WALK_T, to=FIGHT_SOUL, hold=tm(28.5), speed=WALK_SPEED)]
 CLOSE_IN = [tm(25.75 + k / 4) for k in range(9)]   # the ring lunges in on every beat up to the press
 FIGHT_SELECT = (WALK_ARRIVE, tm(28.5))
-PRESSES = [PRESS_T]                             # FIGHT pressed once, the moment it is reached
+PRESSES = [PRESS_T]                             # FIGHT pressed once, the moment its edge is touched
 
 
 # --------------------------------------------------------------------- sections
@@ -857,7 +861,7 @@ def add_slashes(tl: Timeline, nxt, seg, g: "Geo"):
 
 def add_rest(tl: Timeline, nxt):
     """M25-M28.5: no turn is given. The soul walks for FIGHT the whole time
-    (SOUL_SCRIPT) and presses it once, the moment it gets there (PRESSES): the
+    (SOUL_SCRIPT) and presses it once, the moment it touches its edge (PRESSES): the
     button flashes (scene.compose) and one slash cuts the whole ring of living
     ink that had closed in on it (attacks.HuntingInk)."""
     actions.BRUSH_AWAY[:] = []
