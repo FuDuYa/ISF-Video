@@ -121,8 +121,8 @@ for i in range(16):
 for k in (13, 14, 15):
     KICKS.append(dict(t=tm(20 + k / 24), zoom=.03, decay=14))
 KICKS.append(dict(t=tm(20.75), zoom=-.05, decay=9))
-for m in (21, 21.375, 22, 22.375):
-    KICKS.append(dict(t=tm(m), zoom=.035, decay=12))
+for m in (21, 21.375, 22, 22.375):                 # the cut paper drops away (留白): the floor gives
+    KICKS.append(dict(t=tm(m), zoom=.06, pitch=5, decay=10))
 for k in range(12):                                  # each spear through the box
     KICKS.append(dict(t=tm(23 + k / 12), zoom=.02, roll=1.2 * (1 if k % 2 else -1), decay=16))
 for k in range(8):                                   # each FIGHT press

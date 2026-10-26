@@ -781,8 +781,9 @@ def add_external(tl: Timeline, nxt, seg, g: "Geo"):
     tl.attacks.append(helix)
     # ---- M21-22 TUNNEL (the camera zooms right into the canvas): square frames
     #      rush towards us out of a vanishing point that drifts round the middle,
-    #      so the centre is never safe; on each strong beat the canvas is split 3x3
-    #      and inked except one white cell (留白) that walks round the outer ring;
+    #      so the centre is never safe; on each strong beat the canvas, cut 3x3 by
+    #      blades just before, drops away into the dark except one white cell (留白)
+    #      that walks round the outer ring;
     #      the frames' cut-out wedges lead the soul from one white cell to the next
     C0 = np.array([g.cx, g.cy])
     ring = [(0, 0), (1, 0), (2, 0), (2, 1), (2, 2), (1, 2), (0, 2), (0, 1)]
@@ -795,8 +796,10 @@ def add_external(tl: Timeline, nxt, seg, g: "Geo"):
     a0 = aim_at(strong21[0] - .5, g)
     start = min(range(8), key=lambda i: np.linalg.norm(cell_centre(ring[i]) - a0))
     safes = [ring[(start + 1 + k) % 8] for k in range(4)]
-    for t, sc in zip(strong21, safes):
-        tl.attacks.append(A.GridFill((g.ix0, g.iy0, g.ix1, g.iy1), t, sc, seed=nxt()))
+    sixteenth = (tm(1) - tm(0)) / 16
+    for t, sc in zip(strong21, safes):     # 切纸塌陷: cut on the sixteenths before, the pieces drop on the beat
+        tl.attacks.append(A.GridCollapse((g.ix0, g.iy0, g.ix1, g.iy1), t, sc, sixteenth, (g.cx, g.cy),
+                                         seed=nxt()))
     tunnel = sorted({round(n.t, 4) for n in taps if tm(21) - 1e-3 <= n.t < tm(22.75) - 1e-3
                      and not any(abs(n.t - s_) < 1e-3 for s_ in strong21)})
     bounds = strong21 + [tm(22.75)]

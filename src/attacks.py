@@ -1896,6 +1896,222 @@ class GridFill(Attack):
                 c.rect("art", mx - hw, my - hh, mx + hw, my + hh, int(96 * f))
 
 
+class GridCollapse(Attack):
+    """切纸塌陷 - the 留白 grid as cut paper. Four blades fly in from off screen
+    (white streaks over the dark, dark cuts over the paper) and slice the canvas
+    3x3: the two upright cuts four sixteenths before the hit, the two level cuts
+    three before. Every cell but the soul's is washed pale as it is cut, sags and
+    trembles from two sixteenths before (the gap round it darkens), flickers at
+    the end - then on the hit the eight pieces drop away, tumbling in perspective
+    into the black below: the holes are the hazard, only the soul's piece is left.
+    After `hold` ink floods back into the holes (grey, harmless) and the paper
+    heals from the rims inwards. Same hazard cells and timing as GridFill."""
+
+    FALL = .32          # s for a piece to tumble away
+    HEAL = .2           # s for the holes to close again
+
+    def __init__(self, inner, t_hit, safe, step, vp, cols=3, rows=3, hold=.15, seed=0):
+        self.inner, self.th, self.safe = inner, t_hit, tuple(safe)
+        self.step, self.vp = step, np.asarray(vp, float)
+        self.cols, self.rows, self.hold = cols, rows, hold
+        self.t_v, self.t_h, self.t_sag = t_hit - 4 * step, t_hit - 3 * step, t_hit - 2 * step
+        self.t0, self.t1 = self.t_v - .02, t_hit + hold + self.HEAL + .02
+        self.impact = None
+        rng = np.random.default_rng(seed)
+        self.tumble = {}                                       # per piece: axis angle, turn, spin sign
+        for ij in self.doomed():
+            self.tumble[ij] = (rng.uniform(0, math.pi), rng.uniform(.9, 1.5) * rng.choice([-1, 1]),
+                               rng.uniform(.5, 1.0))
+        small = rng.random((6, 10))                            # ragged heal front
+        self.noise = np.asarray(Image.fromarray((small * 255).astype(np.uint8)).resize(
+            (int(inner[2] - inner[0]) + 2, int(inner[3] - inner[1]) + 2), Image.Resampling.BICUBIC), float) / 255
+
+    def doomed(self):
+        return [(i, j) for i in range(self.cols) for j in range(self.rows) if (i, j) != self.safe]
+
+    def cell(self, ij):
+        ix0, iy0, ix1, iy1 = self.inner
+        cw, ch = (ix1 - ix0) / self.cols, (iy1 - iy0) / self.rows
+        return ix0 + ij[0] * cw, iy0 + ij[1] * ch, ix0 + (ij[0] + 1) * cw, iy0 + (ij[1] + 1) * ch
+
+    # ---------------------------------------------------------------- blades
+    def cuts(self):
+        """(time, kind, position, direction) of the four blades."""
+        ix0, iy0, ix1, iy1 = self.inner
+        xs = [ix0 + (ix1 - ix0) * i / self.cols for i in range(1, self.cols)]
+        ys = [iy0 + (iy1 - iy0) * j / self.rows for j in range(1, self.rows)]
+        out = [(self.t_v, "v", x, 1 if n % 2 == 0 else -1) for n, x in enumerate(xs)]
+        out += [(self.t_h, "h", y, 1 if n % 2 == 0 else -1) for n, y in enumerate(ys)]
+        return out
+
+    SWEEP = .07         # s for a blade to cross the screen
+    SPAN = (-80.0, 720.0)
+
+    def blade_seg(self, kind, pos, d, u):
+        """The cut so far (u: 0..1 of the sweep) as a world segment, and the head."""
+        a, b = self.SPAN
+        if d < 0:
+            a, b = b, a
+        head = a + (b - a) * u
+        if kind == "v":
+            return (pos, a), (pos, head)
+        return (a, pos), (head, pos)
+
+    def draw(self, c):
+        t, k = c.t, c.k
+        if t < self.t0 or t >= self.t1:
+            return
+        a = t - self.th
+        Wl, Hl = c.size
+        mine = Image.new("L", (Wl, Hl))
+        dr = ImageDraw.Draw(mine)
+        P = lambda pts: [(x / k, y / k) for x, y in pts]
+
+        # cut lines left behind by the blades (pale, harmless), fading after the hold
+        fade = 1 - smooth((a - self.hold) / .2) if a > self.hold else 1.0
+        heads, segs = [], []
+        for tc, kind, pos, d in self.cuts():
+            u = (t - tc) / self.SWEEP
+            if u < 0:
+                continue
+            segs.append(self.blade_seg(kind, pos, d, min(1.0, u)))
+            if u < 1.25:
+                heads.append((kind, pos, d, u))
+
+        def cut_lines():
+            if fade > 0 and segs:
+                ln = Image.new("L", (Wl, Hl))
+                ld = ImageDraw.Draw(ln)
+                for p0, p1 in segs:
+                    ld.line(P([p0, p1]), fill=int(84 * fade), width=max(1, round(2 / k)))
+                mine.paste(Image.fromarray(np.maximum(np.asarray(mine), np.asarray(ln))))
+
+        doomed = self.doomed()
+        if a < 0:                                              # cut, washed, sagging
+            if t >= self.t_v:
+                wash = int(52 * clamp((t - self.t_v) / .05))
+                sag = in_quad(clamp((t - self.t_sag) / (2 * self.step)))
+                late = a > -.1
+                f = int(t * 60)
+                for n, ij in enumerate(doomed):
+                    x0, y0, x1, y1 = self.cell(ij)
+                    mx, my = (x0 + x1) / 2, (y0 + y1) / 2
+                    if sag > 0:                                # the gap round a sinking piece
+                        dr.rectangle((x0 / k, y0 / k, x1 / k - .01, y1 / k - .01), fill=int(60 + 70 * sag))
+                    s = 1 - .06 * sag
+                    jx = ((f * 7 + n * 13) % 3 - 1) * sag * 1.5
+                    jy = ((f * 11 + n * 5) % 3 - 1) * sag * 1.5
+                    hw, hh = (x1 - x0) / 2 * s - 1.5, (y1 - y0) / 2 * s - 1.5
+                    val = (96 if f % 4 < 2 else 60) if late else int(wash + 18 * sag)
+                    dr.rectangle(((mx - hw + jx) / k, (my - hh + jy) / k,
+                                  (mx + hw + jx) / k - .01, (my + hh + jy) / k - .01), fill=val)
+            cut_lines()
+            self._blades(c, heads)
+            self._merge(c, mine, None)
+            return
+
+        cut_lines()                                            # (the void swallows them)
+        # the holes: every doomed cell, as one void
+        hole = Image.new("L", (Wl, Hl))
+        hd = ImageDraw.Draw(hole)
+        for ij in doomed:
+            x0, y0, x1, y1 = self.cell(ij)
+            hd.rectangle((x0 / k, y0 / k, x1 / k - .01, y1 / k - .01), fill=255)
+        hm = np.asarray(hole) > 0
+        m = np.asarray(mine).copy()
+        hz = None
+        if a < self.hold:                                      # open: black void, pieces tumbling away
+            m[hm] = 255
+            pieces = Image.new("L", (Wl, Hl))
+            pd = ImageDraw.Draw(pieces)
+            u = clamp(a / self.FALL)
+            depth = 1 - (1 - u) ** 2                           # pulled away at once, then sinking on
+            f = 420.0                                          # focal length (px)
+            z = 3.0 * f * depth
+            sc = f / (f + z)
+            for ij in doomed:
+                x0, y0, x1, y1 = self.cell(ij)
+                cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+                ax, turn, spin = self.tumble[ij]
+                cx += (cx - self.vp[0]) * .7 * depth           # the pieces part as they drop
+                cy += (cy - self.vp[1]) * .7 * depth
+                ang = turn * depth * 1.25                      # tumbling about an axis in the paper
+                axis = np.array([math.cos(ax), math.sin(ax), 0.0])
+                hw, hh = (x1 - x0) / 2 - 1.5, (y1 - y0) / 2 - 1.5
+                corners = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)]
+                pts = []
+                for dx, dy in corners:
+                    v = np.array([dx, dy, 0.0])
+                    v = (v * math.cos(ang) + np.cross(axis, v) * math.sin(ang)
+                         + axis * axis.dot(v) * (1 - math.cos(ang)))
+                    s = f / (f + z + v[2])
+                    px = self.vp[0] + (cx + v[0] - self.vp[0]) * s
+                    py = self.vp[1] + (cy + v[1] - self.vp[1]) * s
+                    pts.append((px / k, py / k))
+                facing = .5 + .5 * abs(math.cos(ang))
+                shade = 236 * sc ** .45 * facing               # paper going dark as it falls away
+                pd.polygon(pts, fill=int(max(1, min(254, 255 - shade))),
+                           outline=int(max(1, min(254, 255 - .55 * shade))))   # its cut edge
+            pa = np.asarray(pieces)
+            on = hm & (pa > 0)
+            m[on] = pa[on]
+            from scipy import ndimage as ndi
+            hz = ndi.binary_erosion(hm & ~on, iterations=max(1, round(2 / k)))
+        else:                                                  # ink floods back; the paper heals inwards
+            p = smooth((a - self.hold) / self.HEAL)
+            from scipy import ndimage as ndi
+            dist = ndi.distance_transform_edt(hm)
+            dmax = max(1.0, dist.max())
+            ix0, iy0 = int(self.inner[0] / k), int(self.inner[1] / k)
+            nz = np.zeros((Hl, Wl))
+            nk = self.noise[::k, ::k]
+            ys, xs = slice(iy0, min(Hl, iy0 + nk.shape[0])), slice(ix0, min(Wl, ix0 + nk.shape[1]))
+            nz[ys, xs] = nk[:ys.stop - ys.start, :xs.stop - xs.start]
+            wet = hm & (dist / dmax + .35 * nz > p * 1.4)
+            m[wet] = int(150 - 80 * p)
+        self._blades(c, heads)
+        self._merge(c, Image.fromarray(m), hz)
+
+    def _merge(self, c, mine, hz):
+        """Max-blend into the art layer, so ink drawn earlier (the tunnel) stays on top."""
+        art = np.asarray(c.art).copy()
+        np.maximum(art, np.asarray(mine), out=art)
+        c.art.paste(Image.fromarray(art))
+        if hz is not None and hz.any():
+            h = np.asarray(c.haz).copy()
+            h[hz] = 255
+            c.haz.paste(Image.fromarray(h))
+
+    def _blades(self, c, heads):
+        """The flying blades on the free layer: a white streak over the dark; over
+        the paper (where that layer reads inverted) a dark-grey cut, never black."""
+        if not heads:
+            return
+        import scene as S
+        k = c.k
+        pm = S.paper_mask(c.t, c.box)[0][::k, ::k]
+        Wl, Hl = c.size
+        core, glow = Image.new("L", (Wl, Hl)), Image.new("L", (Wl, Hl))
+        dc, dg = ImageDraw.Draw(core), ImageDraw.Draw(glow)
+        for kind, pos, d, u in heads:
+            if u > 1:
+                continue
+            _, head = self.blade_seg(kind, pos, d, u)
+            tail = 150.0 * d
+            hx, hy = head
+            tx, ty = (hx, hy - tail) if kind == "v" else (hx - tail, hy)
+            dg.line([(tx / k, ty / k), (hx / k, hy / k)], fill=255, width=max(1, round(8 / k)))
+            dc.line([(tx / k, ty / k), (hx / k, hy / k)], fill=255, width=max(1, round(3 / k)))
+        cm, gm = np.asarray(core) > 0, np.asarray(glow) > 0
+        top = np.asarray(c.top).copy()
+        g_only = gm & ~cm
+        top[g_only & ~pm] = 110                                # dim glow over the dark
+        top[g_only & pm] = 255 - 190                           # light grey over the paper
+        top[cm & ~pm] = 255                                    # white streak over the dark
+        top[cm & pm] = 255 - 95                                # dark grey cut over the paper
+        c.top.paste(Image.fromarray(top))
+
+
 class SquareTunnel(Attack):
     """Square frames rush out of a vanishing point in the middle of the canvas
     towards the camera - a tunnel we fly through. Each frame has a wedge cut out;
