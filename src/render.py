@@ -45,6 +45,8 @@ def init():
     dialogue.INK_HOOK = intro.bubble_hook
     import soak
     S.SOAK = soak.Soak()
+    import curtain
+    S.CURTAIN = curtain.Curtain()
     cinema.SOUL = lambda t: soul_at(int(round(t * FPS)))[0]
     plan = np.load(ROOT / "output" / "plan.npz")
     _state.update(tl=tl, intro=intro, plan=plan)

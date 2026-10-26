@@ -104,7 +104,7 @@ KEYS = [
     dict(t=C.PRESS_T - .1, focus=(204, 404), zoom=1.36, pitch=0, yaw=0, roll=0),
     dict(t=C.PRESS_T, focus=(170, 430), zoom=1.7, pitch=0, yaw=0, roll=0, ease="in"),
     dict(t=C.PRESS_T + .2, focus=(168, 432), zoom=1.74, pitch=0, yaw=0, roll=0, ease="linear"),
-    dict(t=tm(28.5), focus=(320, 240), zoom=1.0, pitch=0, yaw=0, roll=0, ease="out"),
+    dict(t=tm(28.5), focus=(320, 240), zoom=1.0, pitch=0, yaw=0, roll=0, ease="smooth"),   # (no jolt as it starts)
 ]
 
 KICKS = [dict(t=CORNERS[4], zoom=.02, decay=14)]
@@ -146,6 +146,15 @@ LIFT = [(t + 1 / 60, 1 / 60, 70) for t in SIXTEENTHS] + [(DOWNBEAT + 2 / 60, 3 /
 GLITCH = [(SIXTEENTHS[3], .06, .8), (SIXTEENTHS[6], .06, 1.0), (DOWNBEAT, .09, 1.2),
           (tm(24.75), .08, 1.0)]
 INVERT.append((tm(24.75), 1 / 60))
+for t in C.CONFIRMS:                                 # each confirmed bar smashes a drop
+    KICKS.append(dict(t=t, zoom=.03, roll=1.0, decay=16))
+KICKS.append(dict(t=C.AIM_OPEN, zoom=.04, decay=12))   # FIGHT: the aim meter comes up
+for n in _notes:                                     # every piece of the ink curtain cut away
+    if tm(31) - 1e-3 <= n.t < C.REVEAL - 1e-3:
+        KICKS.append(dict(t=n.t, zoom=.02, roll=.8 * (1 if int(n.t * 1000) % 2 else -1), decay=16))
+KICKS.append(dict(t=C.REVEAL, zoom=-.07, pitch=-3, decay=8))   # the curtain falls: he was behind it
+GLITCH.append((C.REVEAL, .07, .9))
+INVERT.append((C.REVEAL, 1 / 60))
 for m in (24.125, 24.25, 24.375):                    # 解: each turn of the shut box starts in a one-frame flash
     INVERT.append((tm(m), 1 / 60))
 

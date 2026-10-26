@@ -28,6 +28,7 @@ SANS_HOOK = None          # set by render.py: intro ink formation of Ink Sans
 BACKDROP = None           # set by render.py: background mood layer (backdrop.Backdrop)
 DIALOGUE = None           # set by render.py: Ink Sans speech bubble (dialogue.Dialogue)
 SOAK = None               # set by render.py: the arena soaking into a canvas (soak.Soak)
+CURTAIN = None            # set by render.py: the curtain of ink Ink Sans hides behind (curtain.Curtain)
 BRUSH_RETURNS = C.tm(12.75) - .45  # the brush ink-forms on his back, done on the break star
 
 
@@ -332,7 +333,14 @@ def compose_canvas(frame, t, tl, box, ctx, under_top=None):
     art = ctx.layer("art")
     am = (art > 0) & pm
     frame[am] = np.clip(255 - art[am].astype(np.int16) - g[am], 0, 255).astype(np.uint8)
-    if not (SANS_HOOK and SANS_HOOK(frame, t)):
+    if CURTAIN is not None and CURTAIN.active(t):
+        # he is hiding behind the curtain of ink over the paper: drawn only where
+        # there is no paper (behind its edge), then the curtain over him
+        tmp = frame.copy()
+        draw_sans(tmp, t, tl)
+        frame[~pm] = tmp[~pm]
+        CURTAIN.draw(frame, t, pm)
+    elif not (SANS_HOOK and SANS_HOOK(frame, t)):
         draw_sans(frame, t, tl)                                 # he stands in front of the canvas
     compose_canvas.hud_done = bool(under_top and under_top(frame, pm))
     top = ctx.layer("top").copy()

@@ -47,7 +47,7 @@ ENGULF = TRIP_T[6]
 SOAK_STEPS = TRIP_T[6:9]
 PAPER_STEPS = TRIP_T[9:12]
 CANVAS_SET = tm(16)
-CANVAS = (lambda: (CANVAS_SET, tm(28.5)))      # from here on the arena is a canvas
+CANVAS = (lambda: (CANVAS_SET, SECTION_END))   # from here on the arena is a canvas
 # the rest after the cube (M25-M28.5): the canvas wraps the buttons too. The burst
 # throws the soul a little left of the middle; from there it heads for FIGHT the
 # whole time (arrow keys held, 8 directions - no turn is given) while the ink of
@@ -60,6 +60,7 @@ REST_RECT = (-150, 226, 790, 630)              # the sheet runs on past the scre
 # first spot where the heart overlaps fight1.png (at 32,432) - by one pixel, on
 # the middle of its right edge (the step before, it is still clear of it)
 FIGHT_SOUL = (149, 451)
+MENU_SOUL = (47, 453)                           # the soul's spot on the FIGHT button (UT's menu cursor)
 PRESS_T = tm(28)
 DEEP_T = tm(22.75) - .26     # the camera is deepest inside the canvas: the rectangle is there from now on (cinema);
                              # it holds there (a beat to take it in) until M22.75, then pulls back
@@ -72,11 +73,27 @@ _WALK_STEPS = int(PRESS_T * 60) - int(round(WALK_T * 60))
 WALK_SPEED = max(abs(KNOCK_TO[0] - FIGHT_SOUL[0]), abs(KNOCK_TO[1] - FIGHT_SOUL[1])) / _WALK_STEPS
 WALK_ARRIVE = (int(round(WALK_T * 60)) + _WALK_STEPS) / 60
 SOUL_SCRIPT_REST = [dict(kind="fly", t0=tm(24.75), dur=KNOCK_DUR, to=KNOCK_TO, hold=WALK_T),
-                    dict(kind="walk", t0=WALK_T, to=FIGHT_SOUL, hold=tm(28.5), speed=WALK_SPEED)]
+                    dict(kind="walk", t0=WALK_T, to=FIGHT_SOUL, hold=PRESS_T + .22, speed=WALK_SPEED),
+                    dict(kind="fly", t0=PRESS_T + .22, dur=.55, to=MENU_SOUL, hold=tm(34), ease="smooth")]
 SOUL_SCRIPT = list(SOUL_SCRIPT_REST)      # (build() puts the dodge out of the paper box in front)
 CLOSE_IN = [tm(25.75 + k / 4) for k in range(9)]   # the ring lunges in on every beat up to the press
-FIGHT_SELECT = (WALK_ARRIVE, tm(28.5))
-PRESSES = [PRESS_T]                             # FIGHT pressed once, the moment its edge is touched
+# after the cut (M28-M33.5): the cut ring is not destroyed - every drop cracks and
+# is knocked away; the soul eases back onto FIGHT (the menu spot); the drops come
+# alive again and fly at it one by one on the M28.5 eighths; FIGHT is pressed on
+# the M29.5 hold and UT's aim meter comes up - every confirmed bar (M29.625-M30.75)
+# smashes one drop. Then the player cuts the pure black over the paper (M31-M32.9375):
+# piece by piece it comes off - it was a curtain of black ink, and on the M33
+# downbeat the rest falls: Ink Sans was hiding behind it all along (he stands
+# there through M33; the old placeholder takes over from M34)
+SECTION_END = tm(34)                            # (he stands there, revealed, through M33)
+SETTLE = (PRESS_T + .22, .45)                   # (start, duration) of easing back onto it
+LAUNCH = [tm(28.5 + k / 8) for k in range(8)]   # each drop flies at the soul on its eighth
+AIM_OPEN = tm(29.5)                             # FIGHT pressed again: the aim meter
+CONFIRMS = [tm(m) for m in (29.625, 29.75, 29.875, 30.125, 30.25, 30.375, 30.5, 30.75)]
+CURTAIN_START = PRESS_T                         # the black over the paper is a curtain of ink from here on
+REVEAL = tm(33)                                 # the rest of it falls: Ink Sans is behind it
+FIGHT_SELECT = (WALK_ARRIVE, SECTION_END)
+PRESSES = [PRESS_T, AIM_OPEN]                   # the cut (its edge just touched), then FIGHT for the aim meter
 # Ink Sans is gone while the camera is right inside the canvas (out of shot) - when
 # it pulls back he is not there; he is back while it is pushed in on the FIGHT cut
 # (out of shot again), so he is simply there once it pulls back after it
@@ -160,10 +177,10 @@ SECTIONS = [
     dict(m=25, box=(200, 150), tap="none", hold="none", slide="none", head="head_close_eyes.png",
          body="body.png"),
     # (placeholder until the next part is directed: no attacks yet)
-    dict(m=28, box=(200, 150), tap="none", hold="none", slide="none", head="head_close_eyes.png",
+    dict(m=28, box=(200, 150), tap="none", hold="none", slide="none", head="head_black_eyes.png",
          body="body.png"),
-    dict(m=29, box=(260, 130), tap="drip", hold="hbeam", head="head_normal.png"),
-    dict(m=33, box=(150, 150), tap="spike", hold="beam", head="head_black.png"),
+    # (old placeholder from here on, until the next part is directed)
+    dict(m=34, box=(150, 150), tap="spike", hold="beam", head="head_black.png"),
     dict(m=39, box=(300, 130), tap="bone", hold="hbeam", head="head_black_eyes.png"),
     dict(m=42, box=(260, 140), tap="dart", hold="hbeam", head="head_black_eyes.png"),
     dict(m=46, box=(160, 150), tap="drip", hold="beam", head="head_black_eyes.png"),
@@ -703,8 +720,11 @@ def add_battle(tl: Timeline, nxt, notes):
         # rings the soul (which the blast has thrown clear) and closes in on it
         # until the one press of FIGHT cuts it all
         hunt_target = (lambda t: AIM(t) if AIM is not None and AIM(t) is not None else FIGHT_SOUL)
-        tl.attacks.append(A.HuntingInk((g.cx, g.cy), n.t, hunt_target, PRESS_T, tm(28.5), lunges=CLOSE_IN,
-                                       seed=nxt()))
+        tl.attacks.append(A.HuntingInk((g.cx, g.cy), n.t, hunt_target, PRESS_T, CONFIRMS[-1] + .5, lunges=CLOSE_IN,
+                                       seed=nxt(), launches=LAUNCH, confirms=CONFIRMS, home=MENU_SOUL))
+        # FIGHT on the M29.5 hold: UT's aim meter, painted on the paper; one bar
+        # per drop, each stopped (confirmed) on its note - and that drop is smashed
+        tl.attacks.append(A.FightTarget((320, 316), 268, 54, AIM_OPEN, CONFIRMS, CONFIRMS[-1] + .12, slide=.42))
         tl.extra_impacts.append((n.t, 8.0))
         tl.flashes.append((n.t, 40))
     add_rest(tl, nxt)
@@ -932,4 +952,6 @@ def add_rest(tl: Timeline, nxt):
     actions.BRUSH_AWAY[:] = []
     actions.PARRIES[:] = []
     for t in PRESSES:
-        tl.extra_impacts.append((t, 6.0))
+        tl.extra_impacts.append((t, 6.0 if t == PRESS_T else 3.0))
+    for t in CONFIRMS:                                  # each confirmed bar smashes a drop
+        tl.extra_impacts.append((t, 2.5))

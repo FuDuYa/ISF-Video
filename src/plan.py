@@ -177,14 +177,17 @@ def forward(safe, surv, valid, start):
             continue
         to = np.array(sc["to"], float)
         if sc["kind"] == "fly":
-            p0 = pos[a].astype(float)
+            p0 = pos[a - 1 if a > 0 else a].astype(float)       # from where the previous move left it
             cube = getattr(C, "CUBE", None)
             if cube is not None and cube.tx <= sc["t0"] - 1 / FPS < cube.tb + 1e-6:
                 p0 = np.asarray(cube.soul_view(pos[a - 1], sc["t0"] - 1 / FPS)[0], float)
             b = max(1, int(round(sc["dur"] * FPS)))
             for i in range(a, min(e, n)):
                 u = min(1.0, (i - a) / b)
-                u = 1 - (1 - u) ** 3
+                if sc.get("ease") == "smooth":            # eased in and out (settling back, not thrown)
+                    u = u * u * (3 - 2 * u)
+                else:                                     # thrown: fast, then slowing down
+                    u = 1 - (1 - u) ** 3
                 pos[i] = np.round(p0 + (to - p0) * u)
                 vis[i] = True
         else:

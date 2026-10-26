@@ -3566,7 +3566,10 @@ class HuntingInk(Attack):
     SPIN0, SPIN1 = 1.0, 2.6    # rad/s: faster as it tightens
     SWEEP = .1                 # the one slash runs round the whole ring in this long
 
-    def __init__(self, center, t_burst, target, t_cut, t_end, lunges=(), n=8, tele=.42, seed=0):
+    def __init__(self, center, t_burst, target, t_cut, t_end, lunges=(), n=8, tele=.42, seed=0,
+                 launches=(), confirms=(), home=None):
+        self.launches, self.confirms = list(launches), list(confirms)
+        self.home = np.asarray(home if home is not None else center, float)
         self.C = np.asarray(center, float)
         self.tb, self.tc, self.te, self.n, self.tele = t_burst, t_cut, t_end, n, tele
         self.lunges = sorted(lunges)
@@ -3630,6 +3633,88 @@ class HuntingInk(Attack):
         self.t0, self.t1 = t_burst - tele, t_end + .2
         self.impact = None
         self.overscan = True                              # also drawn past the screen (scene.overscan)
+        # after the cut: each drop cracks and is knocked away - they fan out over
+        # the paper above the soul - hovers, then flies at the soul (launches) and
+        # is smashed by a confirmed bar of the aim meter (confirms)
+        self.after = None
+        if self.cut_c is not None and self.launches:
+            ic = [min(len(self.ts) - 1, int((self.cut_t[k] - t_burst) * 120)) for k in range(n)]
+            p_cut = np.array([P[ic[k], k] for k in range(n)])
+            rel = p_cut - self.cut_c
+            by_angle = np.argsort(np.arctan2(rel[:, 1], rel[:, 0]))
+            fan = np.radians(np.linspace(-86, -18, n))    # an arc over the paper, round the FIGHT button
+            seq = [3, 4, 2, 5, 1, 6, 0, 7][:n]            # from the middle of the arc outwards
+            self.after = {}
+            for slot, k in enumerate(by_angle):
+                a = fan[slot]
+                R = 245 + 55 * (slot % 2) + 10 * rng.random()
+                h = self.home + np.array([math.cos(a) * R, math.sin(a) * R * .78])
+                h = np.array([float(np.clip(h[0], 60, 600)), float(np.clip(h[1], 255, 392))])
+                order = seq.index(slot) if slot in seq else slot
+                L = self.launches[min(order, len(self.launches) - 1)]
+                S = self.confirms[min(order, len(self.confirms) - 1)] if self.confirms else t_end
+                self.after[int(k)] = dict(p0=p_cut[k], hover=h, L=L, S=S, tc=float(self.cut_t[k]))
+
+    BOUNCE = .5         # s to be knocked away after the cut
+
+    def pos_after(self, k, t):
+        """A cut drop: knocked away along an arc to its spot on the fan, trembling
+        there (more and more as its turn comes), then flying at the soul,
+        faster and faster - smashed before it gets there."""
+        d = self.after[k]
+        a = t - d["tc"]
+        if t < d["L"]:
+            u = out_cubic(clamp(a / self.BOUNCE))
+            p = d["p0"] + (d["hover"] - d["p0"]) * u + np.array([0.0, -38.0 * math.sin(math.pi * u)])
+            if a > self.BOUNCE:
+                w = .8 + 2.2 * smooth((t - (d["L"] - .6)) / .6)
+                p = p + np.array([w * math.sin(t * 57 + k), w * math.cos(t * 49 + 2 * k)])
+            return p
+        u = clamp((t - d["L"]) / max(.05, d["S"] - d["L"]))
+        T = np.asarray(self.target(t), float)
+        return d["hover"] + (T - d["hover"]) * .8 * u ** 1.7
+
+    def draw_after(self, c, t, k):
+        d = self.after[k]
+        if t >= d["S"]:                                    # smashed by a confirmed bar
+            a = t - d["S"]
+            if a >= .4:
+                return
+            x, y = self.pos_after(k, d["S"] - 1e-3)
+            q = a / .4
+            for j in range(7):
+                r1, r2, r3 = self.spl[k][j % 5]
+                ang = j / 7 * math.tau + r1
+                dd = 8 + 70 * out_cubic(q) * (.6 + r3)
+                sx, sy = x + math.cos(ang) * dd, y + math.sin(ang) * dd + 60 * q * q
+                sz = (5 + 4 * r2) * (1 - .6 * q)
+                tri = [(sx + math.cos(ang + o) * sz, sy + math.sin(ang + o) * sz) for o in (0, 2.3, 4.1)]
+                c.poly("top", tri, fade_gray(240, 1 - q))
+            if a < .1:
+                c.ring("top", x, y, 10 + 60 * a / .1, 3, fade_gray(200, 1 - a / .1))
+            spr = self.slash(min(5, int(a / .05)))
+            c.sprites.append((spr, int(x - spr.w / 2), int(y - spr.h / 2), 1.0, None))
+            return
+        x, y = self.pos_after(k, t)
+        px, py = self.pos_after(k, max(d["tc"], t - .035))
+        flying = t >= d["L"]
+        size = 24.0 * (1 + (.25 * (1 - (t - d["L"]) / .12) if 0 <= t - d["L"] < .12 else 0.0))
+        c.circle("top", x, y, size + 6, 1)                 # a rim of paper: it reads over the HUD
+        c.line("top", [(px, py), (x, y)], max(3.0, size * .42), 200 if flying else 150)
+        c.circle("top", x, y, size, 245)
+        # cracked, not broken: a split across it, a chip bitten out of its rim
+        c.line("top", [(x + 2 + self.slash_dx[k] * .6, y - 10), (x - 2 + self.slash_dx[k] * .6, y + 10)], 2, 1)
+        c.circle("top", x + 9, y - 7, 6, 1)
+        a = t - d["tc"]
+        if a < .3:                                         # the chips knocked off by the cut
+            for r1, r2, r3 in self.spl[k]:
+                q = a / .3
+                ang = (r1 - .5) * 2.2 + (math.pi * .25 if r2 > .5 else -math.pi * .75)
+                dd = 6 + 34 * out_cubic(q) * (.5 + r3)
+                c.circle("top", x + math.cos(ang) * dd, y + math.sin(ang) * dd + 30 * q * q, 3 + 2 * r3,
+                         fade_gray(230, 1 - q))
+            spr = self.slash(min(5, int(a / .05)))
+            c.sprites.append((spr, int(x - spr.w / 2 + self.slash_dx[k]), int(y - spr.h / 2), 1.0, None))
 
     def radius(self, t):
         """Wide once it has rung the soul, then closing in slowly and smoothly all
@@ -3705,6 +3790,9 @@ class HuntingInk(Attack):
                 near = clamp((math.hypot(x - sp[0], y - sp[1]) - 70) / 60)
                 size = 17.0 - 2.0 * e + 4.0 * float(np.clip(dy, -1, 1)) * (1 - near) * flat
             cut = t >= self.cut_t[k]
+            if cut and self.after is not None:
+                self.draw_after(c, t, int(k))
+                continue
             if self.WAKE[0] < tau < self.WAKE[1] + .1:      # trembling as it wakes up
                 x += 1.5 * math.sin(t * 61 + k)
                 y += 1.5 * math.cos(t * 53 + k * 2)
