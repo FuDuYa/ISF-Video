@@ -108,6 +108,74 @@ def warp(frame: np.ndarray, p, plane: np.ndarray | None = None) -> np.ndarray:
 _YY, _XX = np.mgrid[0:H, 0:W]
 
 
+def project_point(p, x, y):
+    """Where world point (x, y) lands on screen under camera p (same maths as warp)."""
+    if is_identity(p):
+        return float(x), float(y)
+    focal = 800.0
+    dist = focal / p["zoom"]
+    pitch, yaw, roll = (math.radians(p[k]) for k in ("pitch", "yaw", "roll"))
+    cp, sp, cy, sy, cr, sr = (math.cos(pitch), math.sin(pitch), math.cos(yaw), math.sin(yaw),
+                              math.cos(roll), math.sin(roll))
+    rot = (np.array([[cr, -sr, 0], [sr, cr, 0], [0, 0, 1]]) @
+           np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]]) @
+           np.array([[1, 0, 0], [0, cp, -sp], [0, sp, cp]]))
+    fx_, fy_ = p["focus"]
+    q = rot @ np.array([x - fx_, y - fy_, 0.0])
+    s = focal / max(100, dist - q[2])
+    return W / 2 + q[0] * s, H / 2 + q[1] * s
+
+
+def _noise_field(seed, cells, size=(H, W)):
+    rng = np.random.default_rng(seed)
+    small = (rng.random(cells) * 255).astype(np.uint8)
+    big = Image.fromarray(small).resize((size[1] * 2, size[0] * 2), Image.Resampling.BICUBIC)
+    return np.asarray(big, np.float32) / 255 - .5          # twice the screen, to scroll through
+
+
+_INK_N1 = _noise_field(41, (14, 18))
+_INK_N2 = _noise_field(42, (40, 52))
+_INK_ANG = np.random.default_rng(43).uniform(-1, 1, 11)
+
+
+def crisis_ink(frame, t, centre, radius, throb=0.0, splats=()):
+    """Screen-wide ink closing in on `centre` (the soul on screen): smoky, ragged
+    ink creeps in from every edge, leaving a clear hole of about `radius` px round
+    the soul (pale at its rim, dark grey - never solid black - at the edges).
+    `throb` darkens it for a heartbeat; `splats`: (x, y, r, age, seed) blots of
+    ink thrown on the lens, running down and fading."""
+    cx, cy = centre
+    ox, oy = int(t * 23) % W, int(t * 17) % H                 # the smoke drifts
+    n1 = _INK_N1[oy:oy + H, ox:ox + W]
+    n2 = _INK_N2[(oy * 2) % H:(oy * 2) % H + H, (ox * 3) % W:(ox * 3) % W + W]
+    dx, dy = (_XX - cx) / 1.2, (_YY - cy)
+    d = np.hypot(dx, dy)
+    th = np.arctan2(dy, dx)
+    k = (th / math.tau + .5) * len(_INK_ANG) + t * .8       # a few broad lobes round the soul
+    i0 = np.floor(k).astype(int)
+    fr = .5 - .5 * np.cos(np.pi * (k - i0))
+    ang = _INK_ANG[i0 % len(_INK_ANG)] * (1 - fr) + _INK_ANG[(i0 + 1) % len(_INK_ANG)] * fr
+    rim = radius * (1 + .12 * ang) + 60 * n1 + 16 * n2
+    e = d - rim
+    body = np.clip(e / 28.0, 0, 1)                         # a short, wet edge...
+    band = np.exp(-((e - 8) / 10.0) ** 2) * (e > 0)          # ...where the ink pools darker
+    a = np.clip(body * (.8 + .12 * n2) + .18 * band + throb * .15 * (body > 0), 0, .9)
+    for x, y, r, age, sd in splats:                          # blots on the lens
+        fade = 1 - smooth(age / .7)
+        if fade <= 0:
+            continue
+        rr = np.random.default_rng(int(sd))
+        blob = np.hypot(_XX - x, _YY - y) < r * (1 + .3 * _INK_N2[(int(sd) * 7) % H:(int(sd) * 7) % H + H,
+                                                                  (int(sd) * 13) % W:(int(sd) * 13) % W + W])
+        for _ in range(3):                                   # it runs down
+            hx = x + rr.uniform(-.7, .7) * r
+            run = r * (.6 + 2.4 * out_cubic(min(1.0, age / .6))) * rr.uniform(.6, 1.2)
+            blob |= (np.abs(_XX - hx) < max(2, r * .12)) & (_YY > y) & (_YY < y + run)
+        a = np.maximum(a, blob * .82 * fade)
+    out = frame.astype(np.float32) * (1 - a) + 14 * a
+    return np.clip(out, 0, 255).astype(np.uint8)
+
+
 def vignette(frame, strength, center=(320, 300)):
     if strength <= 0:
         return frame

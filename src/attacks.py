@@ -1562,6 +1562,67 @@ class PenVolleys(Attack):
                     bone.draw(c, t)
 
 
+class InkGather(Attack):
+    """The warning before the run's bones (M17-18): drops of ink swirl in from the
+    dark beside the canvas, speeding up, and gather where a bone is about to form -
+    into a wall's bar just as the bright bead writing it passes their height, or
+    into the spot a single bone launches from. White over the dark, never on the
+    paper (they only come in from the right). Harmless; decoration only.
+    targets: dict(kind="bar", x, y0, y1, paint, write) | dict(kind="pt", x, y, t)."""
+
+    def __init__(self, targets, t_min, seed=0):
+        rng = np.random.default_rng(seed)
+        self.drops = []                                     # (ts, ta, tx, ty, R, th0, swirl, size)
+        for tg in targets:
+            if tg["kind"] == "bar":
+                n = 14
+                for i in range(n):
+                    f = (i + rng.uniform(.2, .8)) / n
+                    ty = tg["y0"] + (tg["y1"] - tg["y0"]) * f
+                    ta = tg["paint"] + tg["write"] * smooth(f)   # meets the bead as it passes
+                    self.drops.append(self._drop(rng, ta, tg["x"], ty, t_min, (70, 150), .34))
+            else:
+                for i in range(6):
+                    tx = tg["x"] + rng.uniform(-14, 14)
+                    ta = tg["t"] - rng.uniform(0, .02)
+                    self.drops.append(self._drop(rng, ta, tx, tg["y"], t_min, (34, 86), .30))
+        self.pops = [(tg["t"], tg["x"], tg["y"]) for tg in targets if tg["kind"] == "pt"]
+        self.t0 = min(d[0] for d in self.drops) if self.drops else 0.0
+        self.t1 = max(d[1] for d in self.drops) + .15 if self.drops else 0.0
+        self.impact = None
+
+    @staticmethod
+    def _drop(rng, ta, tx, ty, t_min, radii, lead):
+        ts = max(t_min, ta - lead - rng.uniform(0, .08))
+        th0 = math.radians(rng.uniform(-60, 60))            # from the right only: never over the paper
+        swirl = rng.uniform(.25, .5) * rng.choice([-1, 1])
+        return (ts, ta, tx, ty, rng.uniform(*radii), th0, swirl, rng.uniform(4.5, 8.0))
+
+    @staticmethod
+    def _pos(d, u):
+        ts, ta, tx, ty, R, th0, swirl, size = d
+        r = R * (1 - u ** 2.2)                               # accelerating in
+        th = th0 + swirl * u
+        return tx + r * math.cos(th), ty + r * math.sin(th)
+
+    def draw(self, c):
+        t = c.t
+        for d in self.drops:
+            ts, ta = d[0], d[1]
+            if not (ts <= t < ta) or ta - ts < .03:
+                continue
+            u = (t - ts) / (ta - ts)
+            g = clamp(u / .25)
+            x, y = self._pos(d, u)
+            px, py = self._pos(d, max(0.0, u - .12))
+            c.line("top", [(px, py), (x, y)], 3, fade_gray(150, g))          # a short wet trail
+            c.circle("top", x, y, d[7] * (1 - .35 * u), fade_gray(235, g))
+        for tp, x, y in self.pops:                           # the gathered ink sets into the bone
+            a = t - tp
+            if 0 <= a < .12:
+                c.ring("top", x, y, 6 + 22 * out_cubic(a / .12), 2, fade_gray(200, 1 - a / .12))
+
+
 def draw_orb(c, x, y, t, fires, r_max=15.0, charge=.45):
     """A white orb outside the canvas: pops in `charge` s before its first shot,
     a ring shrinks onto it before every shot, it flashes and recoils as it fires,

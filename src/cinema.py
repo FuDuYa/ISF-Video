@@ -6,12 +6,14 @@ Times are built from chart measures (choreo.tm) so they stay on the beat.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 import choreo as C
 import fx
 from chart import parse_chart
-from common import ROOT, smooth
+from common import ROOT, smooth, clamp, out_cubic
 
 tm = C.tm
 _notes, _ = parse_chart(ROOT / "maidata.txt", C.OFFSET)
@@ -189,6 +191,54 @@ def cut_at(t):
 TITLE_CUTS = 3          # the first cuts (inside the M15 triplets) show the title, word by word
 
 
+# the rest (M25.75-M28): as the living ink rings the soul and lunges in on every
+# beat, ink closes in over the whole screen too - creeping from the edges round
+# the soul, lunging in with each beat (bigger steps later, a little overshoot), a
+# heartbeat throb, blots thrown on the lens; the one FIGHT slash drives it back
+CRISIS = (C.CLOSE_IN[0] - .3, C.PRESS_T + .35)
+_CR_FAR, _CR_NEAR = 330.0, 66.0                      # clear radius (screen px) at the start / the press
+_CR_W = [1 + .3 * k for k in range(len(C.CLOSE_IN))]
+
+
+def _back(u):
+    c1 = 1.70158
+    u = clamp(u)
+    return 1 + (c1 + 1) * (u - 1) ** 3 + c1 * (u - 1) ** 2
+
+
+def _crisis_level(t):
+    lv = sum(w * _back((t - L) / .09) for w, L in zip(_CR_W, C.CLOSE_IN) if t >= L) / sum(_CR_W)
+    creep = smooth((t - CRISIS[0]) / (C.PRESS_T - CRISIS[0]))
+    return .88 * lv + .12 * creep
+
+
+def _crisis(out, t, p):
+    after = t - C.PRESS_T
+    lv = _crisis_level(min(t, C.PRESS_T))
+    if after > 0:                                    # the slash drives it all back
+        lv *= 1 - out_cubic(clamp(after / .3))
+    if lv <= .001:
+        return out
+    radius = _CR_FAR - (_CR_FAR - _CR_NEAR) * lv
+    sx, sy = fx.project_point(p, *SOUL(t))
+    throb = max((math.exp(-(t - L) * 10) for L in C.CLOSE_IN if t >= L), default=0.0)
+    splats = []
+    for k, L in enumerate(C.CLOSE_IN[2:], start=2):  # blots on the lens from the third lunge on
+        if t < L:
+            continue
+        rng = np.random.default_rng(900 + k)
+        pL = fx.camera_at(L, KEYS, KICKS)
+        lx, ly = fx.project_point(pL, *SOUL(L))
+        rL = _CR_FAR - (_CR_FAR - _CR_NEAR) * _crisis_level(L)
+        for j in range(2):
+            ang = rng.uniform(0, math.tau)
+            dist = rL + rng.uniform(50, 130)
+            age = (t - L) + (3 * after if after > 0 else 0)
+            splats.append((lx + math.cos(ang) * dist * 1.2, ly + math.sin(ang) * dist,
+                           rng.uniform(14, 30), age, 900 + k * 10 + j))
+    return fx.crisis_ink(out, t, (sx, sy), radius, throb * lv, splats)
+
+
 def apply(frame: np.ndarray, t: float) -> np.ndarray:
     import titlecard
     if titlecard.active(t):
@@ -216,6 +266,8 @@ def apply(frame: np.ndarray, t: float) -> np.ndarray:
         out = fx.vignette(out, .45 * g)
         k = sum(1 for s in TRIPLETS if s <= t)
         out = fx.ghost(out, 6 if k % 2 else -6, .28 * g)
+    if CRISIS[0] <= t < CRISIS[1] and SOUL is not None:
+        out = _crisis(out, t, p)
     for t0, dur, s in GLITCH:
         if t0 <= t < t0 + dur:
             out = fx.glitch(out, t, s)

@@ -756,7 +756,12 @@ def add_external(tl: Timeline, nxt, seg, g: "Geo"):
                 and not is_slash(n.t):
             y = float(np.clip(aim_at(n.t - .32, g)[1], g.iy0 + 10, g.iy1 - 10))
             run.append((n.t, (g.x + g.w + 34, y), (-1.0, 0.0)))
-    tl.attacks.append(A.BoneShots(inner, run, speed=640.0, seed=nxt()))
+    shots_run = A.BoneShots(inner, run, speed=640.0, seed=nxt())
+    tl.attacks.append(shots_run)
+    # ink gathers where each single bone will form, just before it launches - the
+    # warning (the walls have their self-writing bar). Own seed: nxt() untouched
+    tl.attacks.append(A.InkGather([dict(kind="pt", x=b.S[0], y=b.S[1], t=b.tg) for b in shots_run.bones],
+                                  tm(17), seed=1717))
     # ---- M19-20 CLIMB: everything comes from above - orbs over the arena fire
     #      down at the soul (the M19 downbeat belongs to the last wall)
     shots = []
