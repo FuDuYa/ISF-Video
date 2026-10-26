@@ -127,8 +127,6 @@ for m in (21, 21.375, 22, 22.375):                 # the cut paper drops away (ç
     KICKS.append(dict(t=tm(m), zoom=.06, pitch=5, decay=10))
 for k in range(12):                                  # each spear through the box
     KICKS.append(dict(t=tm(23 + k / 12), zoom=.02, roll=1.2 * (1 if k % 2 else -1), decay=16))
-for k in range(8):                                   # each FIGHT press
-    KICKS.append(dict(t=tm(26 + k / 4), zoom=.015, decay=16))
 KICKS.append(dict(t=tm(20.75) + .14, zoom=.05, roll=-3, decay=10))     # the shard hits the soul
 # battle (M17-M24): pairs kick, the break blows it open
 for n in _notes:
@@ -191,25 +189,17 @@ def cut_at(t):
 TITLE_CUTS = 3          # the first cuts (inside the M15 triplets) show the title, word by word
 
 
-# the rest (M25.75-M28): as the living ink rings the soul and lunges in on every
-# beat, ink closes in over the whole screen too - creeping from the edges round
-# the soul, lunging in with each beat (bigger steps later, a little overshoot), a
-# heartbeat throb, blots thrown on the lens; the one FIGHT slash drives it back
+# the rest (M25.75-M28): as the living ink rings the soul and slowly closes in,
+# ink closes in over the whole screen too, just as slowly and smoothly - creeping
+# from the edges round the soul; blots seep onto the lens and run down; the one
+# FIGHT slash drives it all back
 CRISIS = (C.CLOSE_IN[0] - .3, C.PRESS_T + .35)
 _CR_FAR, _CR_NEAR = 330.0, 66.0                      # clear radius (screen px) at the start / the press
-_CR_W = [1 + .3 * k for k in range(len(C.CLOSE_IN))]
-
-
-def _back(u):
-    c1 = 1.70158
-    u = clamp(u)
-    return 1 + (c1 + 1) * (u - 1) ** 3 + c1 * (u - 1) ** 2
 
 
 def _crisis_level(t):
-    lv = sum(w * _back((t - L) / .09) for w, L in zip(_CR_W, C.CLOSE_IN) if t >= L) / sum(_CR_W)
-    creep = smooth((t - CRISIS[0]) / (C.PRESS_T - CRISIS[0]))
-    return .88 * lv + .12 * creep
+    import attacks as A
+    return A.close_progress(t, CRISIS[0], C.PRESS_T)
 
 
 def _crisis(out, t, p):
@@ -221,7 +211,6 @@ def _crisis(out, t, p):
         return out
     radius = _CR_FAR - (_CR_FAR - _CR_NEAR) * lv
     sx, sy = fx.project_point(p, *SOUL(t))
-    throb = max((math.exp(-(t - L) * 10) for L in C.CLOSE_IN if t >= L), default=0.0)
     splats = []
     for k, L in enumerate(C.CLOSE_IN[2:], start=2):  # blots on the lens from the third lunge on
         if t < L:
@@ -236,7 +225,7 @@ def _crisis(out, t, p):
             age = (t - L) + (3 * after if after > 0 else 0)
             splats.append((lx + math.cos(ang) * dist * 1.2, ly + math.sin(ang) * dist,
                            rng.uniform(14, 30), age, 900 + k * 10 + j))
-    return fx.crisis_ink(out, t, (sx, sy), radius, throb * lv, splats)
+    return fx.crisis_ink(out, t, (sx, sy), radius, 0.0, splats)
 
 
 def apply(frame: np.ndarray, t: float) -> np.ndarray:

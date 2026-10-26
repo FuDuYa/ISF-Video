@@ -134,6 +134,13 @@ def speed_trail(c, tail, d, length, width=8):
     c.top.paste(Image.fromarray(top))
 
 
+def close_progress(t, t0, t1):
+    """0 -> 1 from t0 to t1: steady in the middle, easing in and out at the ends -
+    a slow, even closing in (the living ink in the rest, and the screen's ink)."""
+    u = clamp((t - t0) / max(1e-6, t1 - t0))
+    return .45 * u + .55 * smooth(u)
+
+
 def fade_gray(value: float, gain: float) -> int:
     return int(max(0, min(255, round(value * clamp(gain)))))
 
@@ -3003,11 +3010,10 @@ class InkShieldStrikes(Attack):
 class HuntingInk(Attack):
     """The ring of ink the cube bursts into does not dry. The drops are thrown far
     out, stop, tremble - and then, as if they had come alive, fall in around the
-    soul in a wide ring and close in on it beat by beat while it heads for FIGHT:
-    on every beat of `lunges` the whole ring lunges inwards (overshooting a little,
-    like something testing its prey), from a tilted ring to a round one, spinning
-    faster; over the last beat it squeezes in the rest of the way, so that when
-    the soul reaches the button (t_cut) the drops are about to touch it.
+    soul in a wide ring and close in on it while it heads for FIGHT: slowly and
+    steadily, never in jerks (close_progress), from a tilted ring to a round one,
+    spinning faster, so that when the soul reaches the button (t_cut) the drops are
+    about to touch it.
     The one press of FIGHT then cuts the whole ring in a single sweep: every drop
     takes UT's slash and stops dead where it was cut. Drawn as ink (black on the
     paper); it never touches the soul, and nothing here hurts."""
@@ -3087,18 +3093,9 @@ class HuntingInk(Attack):
         self.overscan = True                              # also drawn past the screen (scene.overscan)
 
     def radius(self, t):
-        """Wide, then in by a step on each lunge (easing out with a little
-        overshoot), then the last squeeze up to the cut."""
-        r = self.radii[0]
-        for k, tl in enumerate(self.lunges):
-            if t < tl:
-                return r
-            u = clamp((t - tl) / self.LUNGE)
-            e = 1 + 2.70158 * (u - 1) ** 3 + 1.70158 * (u - 1) ** 2
-            r = self.radii[k] + (self.radii[k + 1] - self.radii[k]) * e
-        t_last = (self.lunges[-1] + self.LUNGE) if self.lunges else self.t_close
-        u = clamp((t - t_last) / max(1e-6, self.tc - t_last))
-        return r + (self.R1 - r) * u * u
+        """Wide once it has rung the soul, then closing in slowly and smoothly all
+        the way to the cut (no steps, no overshoot)."""
+        return self.R0 + (self.R1 - self.R0) * close_progress(t, self.t_close, self.tc)
 
     def closing(self, t):
         return clamp((self.R0 - self.radius(t)) / (self.R0 - self.R1), 0.0, 1.1)

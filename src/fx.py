@@ -161,15 +161,16 @@ def crisis_ink(frame, t, centre, radius, throb=0.0, splats=()):
     band = np.exp(-((e - 8) / 10.0) ** 2) * (e > 0)          # ...where the ink pools darker
     a = np.clip(body * (.8 + .12 * n2) + .18 * band + throb * .15 * (body > 0), 0, .9)
     for x, y, r, age, sd in splats:                          # blots on the lens
-        fade = 1 - smooth(age / .7)
+        fade = smooth(age / .35) * (1 - smooth((age - .5) / .7))    # it seeps in, then fades
         if fade <= 0:
             continue
         rr = np.random.default_rng(int(sd))
+        r = r * (.3 + .7 * out_cubic(min(1.0, age / .4)))             # spreading out slowly
         blob = np.hypot(_XX - x, _YY - y) < r * (1 + .3 * _INK_N2[(int(sd) * 7) % H:(int(sd) * 7) % H + H,
                                                                   (int(sd) * 13) % W:(int(sd) * 13) % W + W])
         for _ in range(3):                                   # it runs down
             hx = x + rr.uniform(-.7, .7) * r
-            run = r * (.6 + 2.4 * out_cubic(min(1.0, age / .6))) * rr.uniform(.6, 1.2)
+            run = r * (.6 + 2.4 * smooth(min(1.0, age / 1.0))) * rr.uniform(.6, 1.2)
             blob |= (np.abs(_XX - hx) < max(2, r * .12)) & (_YY > y) & (_YY < y + run)
         a = np.maximum(a, blob * .82 * fade)
     out = frame.astype(np.float32) * (1 - a) + 14 * a
