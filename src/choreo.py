@@ -61,7 +61,8 @@ REST_RECT = (-150, 226, 790, 630)              # the sheet runs on past the scre
 # the middle of its right edge (the step before, it is still clear of it)
 FIGHT_SOUL = (149, 451)
 PRESS_T = tm(28)
-DEEP_T = tm(22.75) - .08     # the camera is deepest inside the canvas: the rectangle is there from now on (cinema)
+DEEP_T = tm(22.75) - .26     # the camera is deepest inside the canvas: the rectangle is there from now on (cinema);
+                             # it holds there (a beat to take it in) until M22.75, then pulls back
 KNOCK_DUR = .4
 KNOCK_TO = (270, 330)                           # thrown just left of the middle
 WALK_T = tm(24.75) + .42
@@ -70,8 +71,9 @@ _WALK_STEPS = int(PRESS_T * 60) - int(round(WALK_T * 60))
 # that it still touches the button only on PRESS_T
 WALK_SPEED = max(abs(KNOCK_TO[0] - FIGHT_SOUL[0]), abs(KNOCK_TO[1] - FIGHT_SOUL[1])) / _WALK_STEPS
 WALK_ARRIVE = (int(round(WALK_T * 60)) + _WALK_STEPS) / 60
-SOUL_SCRIPT = [dict(kind="fly", t0=tm(24.75), dur=KNOCK_DUR, to=KNOCK_TO, hold=WALK_T),
-               dict(kind="walk", t0=WALK_T, to=FIGHT_SOUL, hold=tm(28.5), speed=WALK_SPEED)]
+SOUL_SCRIPT_REST = [dict(kind="fly", t0=tm(24.75), dur=KNOCK_DUR, to=KNOCK_TO, hold=WALK_T),
+                    dict(kind="walk", t0=WALK_T, to=FIGHT_SOUL, hold=tm(28.5), speed=WALK_SPEED)]
+SOUL_SCRIPT = list(SOUL_SCRIPT_REST)      # (build() puts the dodge out of the paper box in front)
 CLOSE_IN = [tm(25.75 + k / 4) for k in range(9)]   # the ring lunges in on every beat up to the press
 FIGHT_SELECT = (WALK_ARRIVE, tm(28.5))
 PRESSES = [PRESS_T]                             # FIGHT pressed once, the moment its edge is touched
@@ -893,8 +895,13 @@ def add_external(tl: Timeline, nxt, seg, g: "Geo"):
              "right": (tw(23.5, 0) - .42, [tw(23.5, 2 - k) for k in range(3)])}   # bottom to top
     box = A.OrigamiBox((g.ix0, g.iy0, g.ix1, g.iy1), DEEP_T, tm(22.75), [tm(22.75 + k / 16) for k in (1, 2, 3)],
                        slams, [tw(23.75, k) for k in range(3)], tm(24), [tm(24.125), tm(24.25), tm(24.375)],
-                       tm(24.5), tm(24.75), seed=nxt())
+                       tm(24.5), tm(24.75), soul_at_warn=aim_at(tw(23.75, 0), g), seed=nxt())
     tl.attacks.append(box)
+    # the moment the warning goes up the soul makes for the one clear cell (arrow
+    # keys held, UT speed) and stays there through the cuts, the X and the burst
+    sx0, sy0, sx1, sy1 = box.cell_xy(*box.safe)
+    safe_xy = (float(box.C[0] + (sx0 + sx1) / 2), float(box.C[1] + (sy0 + sy1) / 2))
+    SOUL_SCRIPT[:] = [dict(kind="walk", t0=tw(23.75, 0) + .05, to=safe_xy, hold=tm(24.75))] + SOUL_SCRIPT_REST
     global CUBE
     CUBE = box
 

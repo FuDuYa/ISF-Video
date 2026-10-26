@@ -177,6 +177,41 @@ def crisis_ink(frame, t, centre, radius, throb=0.0, splats=()):
     return np.clip(out, 0, 255).astype(np.uint8)
 
 
+def dismantle(frame, t, slices):
+    """解 - the screen cut by invisible blades: every slice (t_cut, (x, y), angle,
+    shift, life) is a dead-straight hairline across the whole screen; the picture on
+    one side of it slips along the cut by `shift` px and eases back, while the
+    hairline flashes (inverted, so it shows on paper and on black alike)."""
+    out = frame
+    lines = []
+    for tc, (px, py), ang, shift, life in slices:
+        a = t - tc
+        if not (0 <= a < life):
+            continue
+        ux, uy = math.cos(ang), math.sin(ang)
+        side = ((_XX - px) * -uy + (_YY - py) * ux) > 0
+        d = shift * (1 - a / life) ** 2
+        dx, dy = int(round(ux * d)), int(round(uy * d))
+        if dx or dy:
+            moved = np.roll(out, (dy, dx), axis=(0, 1))
+            out = np.where(side, moved, out)
+        if a < life * .55:
+            lines.append((px, py, ux, uy, 1 - a / (life * .55)))
+    if not lines:
+        return out
+    out = out.copy()
+    for px, py, ux, uy, g in lines:
+        dist = np.abs((_XX - px) * -uy + (_YY - py) * ux)
+        core = dist < 1.0
+        glow = (dist < 3.0) & ~core
+        v = out[core].astype(np.int16)
+        out[core] = np.where(v < 128, 255, 0).astype(np.uint8) if g > .5 else (255 - v).astype(np.uint8)
+        if g > .4:
+            gv = out[glow].astype(np.int16)
+            out[glow] = np.clip(gv + (np.where(gv < 128, 90, -90) * g), 0, 255).astype(np.uint8)
+    return out
+
+
 def vignette(frame, strength, center=(320, 300)):
     if strength <= 0:
         return frame

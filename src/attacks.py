@@ -1500,7 +1500,7 @@ class FlyingBone:
         self.s_in, self.s_out = cp if cp else (0.0, 0.0)
         self.t_in = t_go + (self.s_in - length / 2) / speed      # head crosses into the paper
         self.t_out = t_go + (self.s_out - length / 2) / speed    # head reaches the far side
-        self.t_end = self.t_out + length / speed + .5
+        self.t_end = self.t_out + length / speed + .6
         self.captured_at = None                             # set when a spiral binds it
         rng = np.random.default_rng(seed)
         self.blot = rng.uniform(0, 1, 14)
@@ -1534,12 +1534,21 @@ class FlyingBone:
             q = self.S + self.d * self.s_in + np.array(scroll_d(t, self.t_in))
             c.poly("art", jagged_circle(q[0], q[1], 4 + 12 * out_cubic(a / .3), self.blot, n=10),
                    fade_gray(105, 1 - a / .3))
-        # a pale stain blooms where the paper drank it
-        a = t - self.t_out
+        # a pale stain blooms where the paper drank it - at its edge, which is where
+        # the paper drinks (it does not ride off with the moving sheet: it would leave
+        # the canvas at once and the bone would seem simply to vanish)
+        a = t - (self.t_out - self.L / self.v)               # from the moment its head touches the edge
         if a >= 0:
-            q = self.S + self.d * self.s_out + np.array(scroll_d(t, self.t_out))
-            c.poly("art", jagged_circle(q[0], q[1], 4 + 6 * out_cubic(min(1, a / .25)), self.blot, n=12),
-                   fade_gray(75, 1 - smooth((a - .1) / .3)))
+            q = self.S + self.d * self.s_out
+            big = 1.5 if self.trail else 1.0
+            c.poly("art", jagged_circle(q[0], q[1], (4 + 8 * out_cubic(min(1, a / .2))) * big, self.blot, n=12),
+                   fade_gray(95, 1 - smooth((a - .15) / .35)))
+            if self.trail and a < .4:                       # it splashes out past the edge as it is drunk
+                for j in range(3):
+                    r = self.blot[j]
+                    v = self.d * (230 + 260 * r) + np.array([0.0, (self.blot[j + 5] - .5) * 300])
+                    px, py = q + v * a + np.array([0.0, 520 * a * a])
+                    c.circle("top", px, py, (3 + 3 * r) * (1 - .5 * a / .4), fade_gray(215, 1 - a / .4))
 
 
 class BoneShots(Attack):
@@ -2820,7 +2829,7 @@ class OrigamiBox(Attack):
     LID_HIGH = 22.0     # how far above the walls the lid hovers when it appears
 
     def __init__(self, inner, t_reveal, t_score, fold_top, slams, warn_times, t_shut, tumbles, slash_t, t_burst,
-                 floor_marks=((1, 1), (0, 2), (2, 2), (0, 1)), n_wall_marks=4, n_lid_marks=3,
+                 soul_at_warn=None, n_floor_marks=3, n_wall_marks=4, n_lid_marks=3,
                  height=70.0, D=300.0, vp=(-20.0, 30.0), roll_axis=(1.0, .55, .7), lift=22.0, seed=0):
         x0, y0, x1, y1 = inner
         self.C = np.array([(x0 + x1) / 2, (y0 + y1) / 2])
@@ -2837,22 +2846,41 @@ class OrigamiBox(Attack):
         self.pivot = np.array([0.0, 0.0, -height / 2])
         rng = np.random.default_rng(seed)
         self.frag = rng.uniform(-1, 1, (40, 4))
-        # the warning: which pieces get cut, when each is marked, and when it is cut
+        # the warning: which pieces get cut (each cut also cuts the strip of floor
+        # under it - its footprint), when each is marked, and when it is cut. The
+        # soul's own cell is among them and one edge-middle cell is left clear (the
+        # X cut later misses those), so the soul has to get out of the way in time
+        cells = [(i, j) for i in range(3) for j in range(3)]
+        c0 = self.cell_of(soul_at_warn) if soul_at_warn is not None else (1, 1)
+        mids = [(1, 0), (0, 1), (2, 1), (1, 2)]
+        far = [m for m in mids if m != c0]
+        self.safe = min(far, key=lambda m: (abs(m[0] - c0[0]) + abs(m[1] - c0[1]), rng.random()))
+        free = [cl for cl in cells if cl not in (self.safe, c0, (1, 1))]
+        fl = [c0] if c0 != self.safe else []
+        fl += [free[k] for k in rng.choice(len(free), n_floor_marks - len(fl), replace=False)]
+        picked = [("floor", i, j) for i, j in fl]
         walls = [("wall", sd, i) for sd in ("top", "bottom", "left", "right") for i in range(3)]
-        lids = [("lid", i, j) for i in range(3) for j in range(3)]
-        picked = [("floor", i, j) for i, j in floor_marks]
+        walls = [w for w in walls if not self._touches(self.footprint(w), self.safe)]
         picked += [walls[k] for k in sorted(rng.choice(len(walls), n_wall_marks, replace=False))]
+        lids = [("lid", i, j) for i, j in cells if (i, j) != self.safe and ("floor", i, j) not in picked]
         picked += [lids[k] for k in sorted(rng.choice(len(lids), n_lid_marks, replace=False))]
         order = rng.permutation(len(picked))                 # one warning, in three bursts...
         self.marks = {}
         for n, k in enumerate(order):
             self.marks[picked[k]] = warn_times[n % len(warn_times)]
-        cut_order = rng.permutation(len(picked))              # ...and cut in a random order as it turns
+        # ...and cut in a random order as it turns - but whatever cuts the soul's own
+        # cell waits for the second turn at least, so it has time to get clear
+        late = [k for k in picked if self._touches(self.footprint(k), c0)]
+        rest = [k for k in picked if k not in late]
+        rest = [rest[k] for k in rng.permutation(len(rest))]
+        late = [late[k] for k in rng.permutation(len(late))]
         per = math.ceil(len(picked) / len(self.tumbles))
+        seq = rest[:per] + [x for pair in zip(late, rest[per:] + [None] * len(late)) for x in pair if x is not None]
+        seq += [x for x in rest[per:] if x not in seq]
         self.cuts = {}
-        for n, k in enumerate(cut_order):
+        for n, key in enumerate(seq):
             tk = self.tumbles[min(n // per, len(self.tumbles) - 1)]
-            self.cuts[picked[k]] = tk + .015 + .022 * (n % per)
+            self.cuts[key] = tk + .015 + .022 * (n % per)
         self.spin = {key: rng.uniform(-1, 1, 3) for key in picked}
         self.t0, self.t1 = t_reveal, t_burst + .8
         self.impact = t_burst
@@ -2918,6 +2946,28 @@ class OrigamiBox(Attack):
         if side == "left":
             return cx - W2, cy + a0, cx - W2 + h, cy + a1
         return cx + W2 - h, cy + a0, cx + W2, cy + a1
+
+    def cell_of(self, xy):
+        x, y = xy[0] - self.C[0] + self.W / 2, xy[1] - self.C[1] + self.H / 2
+        return (int(clamp(x / (self.W / 3), 0, 2.999)), int(clamp(y / (self.H / 3), 0, 2.999)))
+
+    WALL_CUT = 24.0     # how far into the floor a wall panel's cut reaches
+
+    def footprint(self, key):
+        """The strip of floor (box coords x0, y0, x1, y1) a piece's cut runs through:
+        a floor cell itself; the cell under a lid cell; the edge under a wall panel."""
+        if key[0] in ("floor", "lid"):
+            return self.cell_xy(key[1], key[2])
+        side, i = key[1], key[2]
+        a0, a1 = self.panel_range(side, i)
+        W2, H2, d = self.W / 2, self.H / 2, self.WALL_CUT
+        return {"top": (a0, -H2, a1, -H2 + d), "bottom": (a0, H2 - d, a1, H2),
+                "left": (-W2, a0, -W2 + d, a1), "right": (W2 - d, a0, W2, a1)}[side]
+
+    def _touches(self, fp, cell):
+        x0, y0, x1, y1 = fp
+        c0, c1, c2, c3 = self.cell_xy(*cell)
+        return x0 < c2 - 1 and c0 + 1 < x1 and y0 < c3 - 1 and c1 + 1 < y1
 
     def cell_xy(self, i, j):
         W3, H3 = self.W / 3, self.H / 3
@@ -3094,18 +3144,25 @@ class OrigamiBox(Attack):
                 tri2 = [cen + off + Rr @ (p - cen) * (1 - .3 * u) for p in tri]
                 add(tri2, "shard", key, 1 - u)
         items.sort(key=lambda e: -e[0])
-        art = None
+        n_floor = 0
         for z, kind, key, pts, extra in items:
             if kind == "floor":
                 up = self._area(pts) > 0
+                n_floor += 1
+                if n_floor == 9:                               # (the floor is down: what cuts through it, next)
+                    after_floor = True
+                else:
+                    after_floor = False
                 if key in self.cuts and t >= self.cuts[key]:
                     c.poly("art", pts, 255)                  # cut out: a hole of ink (hazard, in the floor's own coords)
                     x0, y0, x1, y1 = self.cell_xy(key[1], key[2])
                     c.rect("haz", self.C[0] + x0 + 2, self.C[1] + y0 + 2, self.C[0] + x1 - 2, self.C[1] + y1 - 2, 255)
-                    continue
-                c.poly("art", pts, 10 if up else 92)
-                c.line("art", pts + [pts[0]], 2, 70)           # the floor's own grid, pale
-                self.draw_mark(c, key, pts, t, up)
+                else:
+                    c.poly("art", pts, 10 if up else 92)
+                    c.line("art", pts + [pts[0]], 2, 70)       # the floor's own grid, pale
+                    self.draw_mark(c, key, pts, t, up)
+                if after_floor:
+                    self.draw_footprints(c, t, pose, up)
             elif kind == "wall":
                 th = extra
                 inside = self._area(pts) * self._flat_sign(key[1]) > 0
@@ -3142,6 +3199,29 @@ class OrigamiBox(Attack):
                 g = clamp((a + .03) / .03)
                 c.line("art", [P[0], P[0] + (P[1] - P[0]) * g], 4, 255 if key[0] == "floor" else 165)
         self.draw_slash(c, t, pose)
+
+    FLASH = .1          # a blade cutting a lid / wall piece cuts through the floor under it this long
+
+    def draw_footprints(self, c, t, pose, up):
+        """The floor under every marked lid / wall piece: washed pale from its warning
+        (where not to stand), then, as the piece is cut, the blade goes right down
+        through the box - a flash of ink across that strip (the hazard)."""
+        for key, tw in self.marks.items():
+            if key[0] == "floor":
+                continue
+            tc = self.cuts[key]
+            if not (tw <= t < tc + self.FLASH):
+                continue
+            x0, y0, x1, y1 = self.footprint(key)
+            pts = [self.project((x, y, 0.0), t, pose)[0] for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))]
+            if t < tc:
+                if up:
+                    late = t > tc - .12
+                    c.poly("art", [p + (np.mean(pts, axis=0) - p) * .06 for p in pts],
+                           (96 if int(t * 60) % 4 < 2 else 56) if late else 48)
+                continue
+            c.poly("art", pts, 255)
+            c.rect("haz", self.C[0] + x0 + 2, self.C[1] + y0 + 2, self.C[0] + x1 - 2, self.C[1] + y1 - 2, 255)
 
     def _flat_sign(self, side):
         if not hasattr(self, "_fs"):

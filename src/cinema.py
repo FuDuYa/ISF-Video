@@ -32,7 +32,7 @@ CHARGE = CORNERS[-1]
 
 # M22.75: the deepest the camera goes into the canvas, on the soul - kept far
 # enough from the rectangle's sides that none of them can be in the frame yet
-DEEP = 5.0
+DEEP = 3.6          # just far enough in that the trapping rectangle's edges are out of the frame
 DEEP_T = C.DEEP_T
 
 
@@ -82,11 +82,13 @@ KEYS = [
     # then closer and closer)
     dict(t=tm(21), focus=(320, 313), zoom=1.03, pitch=0, yaw=0, roll=0),
     dict(t=tm(22), focus=(320, 313), zoom=1.15, pitch=0, yaw=0, roll=0, ease="linear"),
-    dict(t=DEEP_T - .12, focus=(320, 313), zoom=2.8, pitch=0, yaw=0, roll=0, ease="in"),
+    dict(t=DEEP_T - .14, focus=(320, 313), zoom=2.6, pitch=0, yaw=0, roll=0, ease="in"),
     # snap all the way in, onto the soul: the whole frame now lies well inside
     # the rectangle - which is only now there to be found (attacks.CanvasCube)
-    dict(t=DEEP_T, focus=lambda t: _deep_focus(t), zoom=DEEP, pitch=0, yaw=0, roll=0, ease="in"),
-    dict(t=tm(22.75), focus=lambda t: _deep_focus(t), zoom=DEEP, pitch=0, yaw=0, roll=0, ease="linear"),
+    # ...the last push only just before it pulls back: in until the rectangle's
+    # edges have just left the frame (centred on it), and a moment's pause there
+    dict(t=DEEP_T, focus=(320, 313), zoom=DEEP, pitch=0, yaw=0, roll=0, ease="in"),
+    dict(t=tm(22.75), focus=(320, 313), zoom=DEEP, pitch=0, yaw=0, roll=0, ease="linear"),
     # ...then pull back: its edges slide in from outside the frame - the soul
     # was trapped in a rectangle all along
     dict(t=tm(23), focus=(320, 313), zoom=1.2, pitch=0, yaw=0, roll=0, ease="out"),
@@ -144,6 +146,8 @@ LIFT = [(t + 1 / 60, 1 / 60, 70) for t in SIXTEENTHS] + [(DOWNBEAT + 2 / 60, 3 /
 GLITCH = [(SIXTEENTHS[3], .06, .8), (SIXTEENTHS[6], .06, 1.0), (DOWNBEAT, .09, 1.2),
           (tm(24.75), .08, 1.0)]
 INVERT.append((tm(24.75), 1 / 60))
+for m in (24.125, 24.25, 24.375):                    # 解: each turn of the shut box starts in a one-frame flash
+    INVERT.append((tm(m), 1 / 60))
 
 # triplet run (M15): every note kicks the camera, every triplet group flashes
 TRIPLETS = _times(15, 16)
@@ -233,6 +237,30 @@ def _crisis(out, t, p):
     return fx.crisis_ink(out, t, (sx, sy), radius, 0.0, splats)
 
 
+_SLICES = None
+
+
+def _dismantle_slices():
+    """解: while the shut paper box tumbles, every piece cut to bits cuts the whole
+    screen with it - a hairline across everything, the picture slipping along it;
+    on each turn a burst of bigger cuts through the middle."""
+    global _SLICES
+    if _SLICES is None and C.CUBE is not None and hasattr(C.CUBE, "cuts"):
+        rng = np.random.default_rng(2424)
+        box = C.CUBE
+        end = box.slash_t - .06                      # all healed before the box is back down for the X
+        raw = []
+        for key, tc in sorted(box.cuts.items(), key=lambda e: e[1]):
+            p = (box.C[0] + rng.uniform(-90, 90), box.C[1] + rng.uniform(-70, 70))
+            raw.append((tc, p, rng.uniform(0, math.pi), rng.uniform(5, 9) * rng.choice([-1, 1]), .24))
+        for tk in box.tumbles:                       # on every turn, a burst of bigger cuts through the middle
+            for j in range(4):
+                p = (box.C[0] + rng.uniform(-40, 40), box.C[1] + rng.uniform(-40, 40))
+                raw.append((tk + .012 * j, p, rng.uniform(0, math.pi), rng.uniform(10, 16) * rng.choice([-1, 1]), .3))
+        _SLICES = [(tc, p, a, sh, min(life, end - tc)) for tc, p, a, sh, life in raw if end - tc > .06]
+    return _SLICES or []
+
+
 def apply(frame: np.ndarray, t: float) -> np.ndarray:
     import titlecard
     if titlecard.active(t):
@@ -260,6 +288,9 @@ def apply(frame: np.ndarray, t: float) -> np.ndarray:
         out = fx.vignette(out, .45 * g)
         k = sum(1 for s in TRIPLETS if s <= t)
         out = fx.ghost(out, 6 if k % 2 else -6, .28 * g)
+    sl = _dismantle_slices()
+    if sl and C.CUBE is not None and C.CUBE.t_shut <= t < C.CUBE.slash_t:
+        out = fx.dismantle(out, t, sl)
     if CRISIS[0] <= t < CRISIS[1] and SOUL is not None:
         out = _crisis(out, t, p)
     for t0, dur, s in GLITCH:
