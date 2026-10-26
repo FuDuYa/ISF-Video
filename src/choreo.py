@@ -76,6 +76,32 @@ CLOSE_IN = [tm(25.75 + k / 4) for k in range(9)]   # the ring lunges in on every
 FIGHT_SELECT = (WALK_ARRIVE, tm(28.5))
 PRESSES = [PRESS_T]                             # FIGHT pressed once, the moment its edge is touched
 
+# the run (M17-18): the paper slides left under the canvas like a treadmill, at a
+# little more than the stars' speed; it eases in after the title card and slows
+# to a stop together with the stars as they turn (backdrop: M18.5625)
+RUN_SCROLL = (tm(17), tm(18.5625))
+RUN_SPEED = 520.0
+RUN_WALLS = [tm(17.375), tm(18), tm(18.375), tm(19)]   # a wall fires on each of these
+EDGE_PUSH = []                                  # (t, px): a wall drunk at the left edge pushes it out
+
+
+def paper_speed(t):
+    if not (RUN_SCROLL[0] <= t <= RUN_SCROLL[1]):
+        return 0.0
+    return RUN_SPEED * smooth((t - RUN_SCROLL[0]) / .25) * smooth((RUN_SCROLL[1] - t) / .5)
+
+
+_SC_T = np.arange(RUN_SCROLL[0] - .05, RUN_SCROLL[1] + .05, 1 / 240)
+_SC_X = np.concatenate([[0.0], np.cumsum([paper_speed(t) for t in _SC_T[:-1]]) / 240])
+
+
+def paper_scroll(t):
+    """How far (px) the paper has slid left by t."""
+    return float(np.interp(t, _SC_T, _SC_X))
+
+
+A.PAPER_SCROLL = paper_scroll
+
 
 # --------------------------------------------------------------------- sections
 # m: first measure; box: outer (w, h); tap/hold: styles; head: Ink Sans head
@@ -664,7 +690,7 @@ def add_battle(tl: Timeline, nxt, notes):
     first = [n for n in seg if abs(n.t - tm(17)) < 1e-3]
     for n in first:
         tl.attacks.append(A.SplashRing(np.array(g.ring(*np.array(key_vec(n.key)) * .6)), n.t, n=9, speed=150,
-                                       seed=nxt(), tele=.0, big=True, harmless=True))
+                                       seed=nxt(), tele=.0, big=True, harmless=True, scroll=True))
     tl.flashes.append((tm(17), 30))
 
 
@@ -748,7 +774,13 @@ def add_external(tl: Timeline, nxt, seg, g: "Geo"):
     for k, t in enumerate(strong):
         use = _wall_rows(g, 8, aim_at(t - .4, g)[1], 1 if k % 2 else -1)
         bars.append(dict(side="R", paint=t - .3, fire=t, pops=[(t - .17 + .008 * i, y) for i, y in enumerate(use)]))
-    tl.attacks.append(A.PenVolleys(g, bars, tm(17), tm(19), speed=620.0, seed=nxt()))
+    walls = A.PenVolleys(g, bars, tm(17), tm(19), speed=620.0, seed=nxt(), trail=True)
+    tl.attacks.append(walls)
+    # each wall is drunk at the left edge all at once: it pushes the paper out there
+    EDGE_PUSH[:] = [(min(b.t_out for b in bar["bones"]), 12.0) for bar in walls.bars]
+    # the paper itself runs: marks ride past on it, pale speed lines streak by
+    tl.attacks.append(A.PaperRun(inner, paper_scroll, paper_speed, RUN_SPEED, RUN_SCROLL[0], RUN_SCROLL[1],
+                                 tm(19), seed=1718))
     run = []
     for n in taps:
         # (no single bones while a wall is sweeping through - they would plug its gap)
@@ -756,7 +788,7 @@ def add_external(tl: Timeline, nxt, seg, g: "Geo"):
                 and not is_slash(n.t):
             y = float(np.clip(aim_at(n.t - .32, g)[1], g.iy0 + 10, g.iy1 - 10))
             run.append((n.t, (g.x + g.w + 34, y), (-1.0, 0.0)))
-    shots_run = A.BoneShots(inner, run, speed=640.0, seed=nxt())
+    shots_run = A.BoneShots(inner, run, speed=640.0, seed=nxt(), trail=True)
     tl.attacks.append(shots_run)
     # ink gathers where each single bone will form, just before it launches - the
     # warning (the walls have their self-writing bar). Own seed: nxt() untouched

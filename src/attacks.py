@@ -41,6 +41,7 @@ class Ctx:
         self.top = Image.new("L", size)   # free overlay (beams, brushes)
         self.haz = Image.new("L", size)   # hazard mask (clipped later)
         self.sprites = []                 # (Sprite, x, y, gain, mask) pasted at full res on top
+        self.ox = 0.0                     # x offset added to every primitive (paper scrolling under it)
         self.d = {"art": ImageDraw.Draw(self.art), "top": ImageDraw.Draw(self.top),
                   "haz": ImageDraw.Draw(self.haz)}
 
@@ -49,7 +50,7 @@ class Ctx:
         """Filled disc; `size` is the world-pixel diameter."""
         k = self.k
         r = max(size, 1.0) / (2 * k)
-        x, y = x / k, y / k
+        x, y = (x + self.ox) / k, y / k
         if r < 1.25:     # tiny discs become solid pixel blocks, not '+' shapes
             s = 0 if r < .75 else 1
             ix, iy = int(x - s / 2), int(y - s / 2)
@@ -60,31 +61,75 @@ class Ctx:
     def ring(self, layer, x, y, r, width, fill):
         """Circle outline of world radius `r`."""
         k = self.k
-        x, y, r = x / k, y / k, r / k
+        x, y, r = (x + self.ox) / k, y / k, r / k
         self.d[layer].ellipse((x - r, y - r, x + r, y + r), outline=fill, width=max(1, int(round(width / k))))
 
     def poly(self, layer, pts, fill):
         k = self.k
-        self.d[layer].polygon([(px / k, py / k) for px, py in pts], fill=fill)
+        self.d[layer].polygon([((px + self.ox) / k, py / k) for px, py in pts], fill=fill)
 
     def line(self, layer, pts, width, fill):
         k = self.k
-        self.d[layer].line([(px / k, py / k) for px, py in pts], fill=fill,
+        self.d[layer].line([((px + self.ox) / k, py / k) for px, py in pts], fill=fill,
                            width=max(1, int(round(width / k))))
 
     def rect(self, layer, x0, y0, x1, y1, fill):
         k = self.k
+        x0, x1 = x0 + self.ox, x1 + self.ox
         self.d[layer].rectangle((x0 / k, y0 / k, x1 / k - .01, y1 / k - .01), fill=fill)
 
     def dot(self, layer, x, y, fill):
-        x, y = int(x // self.k), int(y // self.k)
+        x, y = int((x + self.ox) // self.k), int(y // self.k)
         if 0 <= x < self.size[0] and 0 <= y < self.size[1]:
             self.d[layer].point((x, y), fill=fill)
+
+    def paper(self) -> np.ndarray:
+        """The paper mask at this layer's resolution (cached per frame)."""
+        if getattr(self, "_pm", None) is None:
+            import scene as S
+            self._pm = S.paper_mask(self.t, self.box)[0][::self.k, ::self.k]
+        return self._pm
 
     def layer(self, name) -> np.ndarray:
         """A layer at full resolution (640x480)."""
         a = np.asarray(getattr(self, name))
         return a.repeat(2, 0).repeat(2, 1) if self.k == 2 else a
+
+
+PAPER_SCROLL = None      # set by choreo: t -> how far (px) the paper has slid left by t (the run)
+
+
+def scroll_dx(t, t_mark):
+    """How far a mark left on the paper at t_mark has been carried by t (negative: left)."""
+    if PAPER_SCROLL is None:
+        return 0.0
+    return -(PAPER_SCROLL(t) - PAPER_SCROLL(t_mark))
+
+
+def speed_trail(c, tail, d, length, width=8):
+    """A tapered afterimage behind something flying along d from `tail`: a white
+    streak over the dark, a pale grey one over the paper (the free layer reads
+    inverted there). Only fills pixels nothing else has drawn on."""
+    k = c.k
+    Wl, Hl = c.size
+    img = Image.new("L", (Wl, Hl))
+    dr = ImageDraw.Draw(img)
+    n = 6
+    for i in range(n):
+        f0, f1 = i / n, (i + 1) / n
+        p0, p1 = tail - d * length * f0, tail - d * length * f1
+        dr.line([(p0[0] / k, p0[1] / k), (p1[0] / k, p1[1] / k)], fill=int(255 * (1 - f0) ** 1.3),
+                width=max(1, round(width * (1 - .7 * f0) / k)))
+    a = np.asarray(img).astype(np.float32) / 255
+    on = a > .04
+    if not on.any():
+        return
+    pm = c.paper()
+    top = np.asarray(c.top).copy()
+    free = on & (top == 0)
+    top[free & ~pm] = np.clip(170 * a[free & ~pm], 1, 255).astype(np.uint8)       # white over the dark
+    top[free & pm] = np.clip(12 + 46 * a[free & pm], 1, 255).astype(np.uint8)      # pale grey on paper
+    c.top.paste(Image.fromarray(top))
 
 
 def fade_gray(value: float, gain: float) -> int:
@@ -475,7 +520,7 @@ class SplashRing(Attack):
     """Ink gathers into a point, then bursts into a ring of droplets."""
 
     def __init__(self, center, t, n=10, speed=150, r=5, seed=0, tele=.30, phase=0.0,
-                 life=1.4, big=False, harmless=False):
+                 life=1.4, big=False, harmless=False, scroll=False):
         self.C = np.array(center, float)
         self.th, self.n, self.speed, self.r = t, n, speed, r
         self.tele, self.phase, self.life = tele, phase, life
@@ -487,8 +532,18 @@ class SplashRing(Attack):
         self.shake = 5.0 if big else 3.0
         self.big = big
         self.harmless = harmless          # decoration only: pale, no hazard
+        self.scroll = scroll              # (harmless only) carried off by the paper as it slides
 
     def draw(self, c):
+        if not (self.scroll and self.harmless):
+            return self._draw(c)
+        c.ox = scroll_dx(c.t, self.th)
+        try:
+            return self._draw(c)
+        finally:
+            c.ox = 0.0
+
+    def _draw(self, c):
         t = c.t
         cx, cy = self.C
         tau = t - self.th
@@ -1427,7 +1482,8 @@ class FlyingBone:
     """One bone travelling in a straight line from `start` along `d`; enters the
     canvas, then is soaked up when its head reaches the far side."""
 
-    def __init__(self, start, d, speed, t_go, length, inner, seed=0):
+    def __init__(self, start, d, speed, t_go, length, inner, seed=0, trail=False):
+        self.trail = trail
         self.S, self.d = np.asarray(start, float), np.asarray(d, float) / np.linalg.norm(d)
         self.v, self.tg, self.L = speed, t_go, length
         self.inner = inner                                  # ix0, iy0, ix1, iy1
@@ -1460,17 +1516,21 @@ class FlyingBone:
         if head > self.s_out:                               # soaked up at the far side
             head = self.s_out
         if head - tail >= 2 * CAP + 2:
+            if self.trail:                                  # afterimage: the speed of the run
+                speed_trail(c, self.S + self.d * max(0.0, tail), self.d, min(80.0, max(0.0, tail) + 10))
             put_bone_line(c, self.S + self.d * tail, self.S + self.d * head)
-        # pale splash where it crossed into the paper (harmless)
+        # pale splash where it crossed into the paper (harmless; carried off by the paper)
         a = t - self.t_in
         if 0 <= a < .3:
             q = self.S + self.d * self.s_in
+            q = (q[0] + scroll_dx(t, self.t_in), q[1])
             c.poly("art", jagged_circle(q[0], q[1], 4 + 12 * out_cubic(a / .3), self.blot, n=10),
                    fade_gray(105, 1 - a / .3))
         # a pale stain blooms where the paper drank it
         a = t - self.t_out
         if a >= 0:
             q = self.S + self.d * self.s_out
+            q = (q[0] + scroll_dx(t, self.t_out), q[1])
             c.poly("art", jagged_circle(q[0], q[1], 4 + 6 * out_cubic(min(1, a / .25)), self.blot, n=12),
                    fade_gray(75, 1 - smooth((a - .1) / .3)))
 
@@ -1479,13 +1539,13 @@ class BoneShots(Attack):
     """Single bones thrown in from outside the canvas (no orb), each entering the
     paper on its beat: [(t_enter, start (x, y), direction (dx, dy))]."""
 
-    def __init__(self, inner, shots, speed=620.0, length=30, seed=0):
+    def __init__(self, inner, shots, speed=620.0, length=30, seed=0, trail=False):
         rng = np.random.default_rng(seed)
         self.bones = []
         for t_enter, start, d in shots:
             probe = FlyingBone(start, d, speed, 0.0, length, inner)
             self.bones.append(FlyingBone(start, d, speed, t_enter - probe.t_in, length, inner,
-                                         seed=int(rng.integers(1_000_000))))
+                                         seed=int(rng.integers(1_000_000)), trail=trail))
         self.t0 = min(b.tg for b in self.bones)
         self.t1 = max(b.t_end for b in self.bones)
         self.impact = None
@@ -1501,7 +1561,7 @@ class PenVolleys(Attack):
     one piece of that bar into a bone; on the next strong beat the bones fly into
     the canvas as a wall with a gap, turn to ink, and are soaked up at the far side."""
 
-    def __init__(self, g, bars, t_in, t_out, speed=380.0, seed=0):
+    def __init__(self, g, bars, t_in, t_out, speed=380.0, seed=0, trail=False):
         self.g = g
         self.inner = (g.ix0, g.iy0, g.ix1, g.iy1)
         self.bar_x = {"L": g.x - 62, "R": g.x + g.w + 62}
@@ -1513,7 +1573,8 @@ class PenVolleys(Attack):
         for b in bars:                                   # dict(side, paint, pops=[(t, y)], fire)
             x = self.bar_x[b["side"]]
             d = np.array([1.0, 0.0]) if b["side"] == "L" else np.array([-1.0, 0.0])
-            bones = [FlyingBone((x, y), d, speed, b["fire"], 34, self.inner, seed=int(rng.integers(1_000_000)))
+            bones = [FlyingBone((x, y), d, speed, b["fire"], 34, self.inner, seed=int(rng.integers(1_000_000)),
+                                trail=trail)
                      for _, y in b["pops"]]
             self.bars.append(dict(b, x=x, bones=bones))
         self.t0 = t_in
@@ -1560,6 +1621,68 @@ class PenVolleys(Attack):
                         c.circle("top", q[0], q[1], 4, fade_gray(150, 1 - af / .3))
                 for bone in b["bones"]:
                     bone.draw(c, t)
+                    a = t - bone.t_out
+                    if 0 <= a < .45 and bone.d[0] < 0:          # splashed out past the left edge
+                        q = bone.S + bone.d * bone.s_out
+                        for j in range(3):
+                            r = self.jit[(int(q[1]) * 3 + j * 37) % 400]
+                            r2 = self.jit[(int(q[1]) * 7 + j * 53 + 11) % 400]
+                            vx = -330 - 640 * (r - .7)                # flung out hard...
+                            vy = (r2 - 1) * 430 + (j - 1) * 70        # ...and fanned up and down
+                            px = self.g.x - 14 + vx * a
+                            py = q[1] + vy * a + 650 * a * a
+                            c.circle("top", px, py, (3 + 3 * r) * (1 - .4 * a / .45), fade_gray(225, 1 - a / .45))
+
+
+class PaperRun(Attack):
+    """The run (M17-18): the paper slides left under the canvas like a treadmill.
+    Old pale stains and dry-brush marks ride on it (they come in from the right
+    and are carried across), and pale speed lines streak past faster still while
+    it moves. All pale and harmless; drawn first, under everything."""
+
+    z = -1
+
+    def __init__(self, inner, scroll, speed, v_max, t_in, t_stop, t_fade, seed=0):
+        self.inner, self.scroll, self.speed, self.vmax = inner, scroll, speed, v_max
+        self.t0, self.t1 = t_in, t_fade + .45
+        self.t_fade = t_fade
+        self.impact = None
+        rng = np.random.default_rng(seed)
+        ix0, iy0, ix1, iy1 = inner
+        span = scroll(t_stop) + (ix1 - ix0)
+        self.marks = []                                      # (X on the sheet, y, kind, size, value, blot)
+        X = ix1 + 8
+        while X < ix1 + span:
+            kind = "dash" if rng.random() < .4 else "stain"
+            self.marks.append((X, rng.uniform(iy0 + 5, iy1 - 5), kind, rng.uniform(2.5, 8.0) if kind == "stain"
+                               else rng.uniform(10, 28), rng.uniform(22, 52), rng.uniform(0, 1, 12)))
+            X += rng.uniform(16, 46)
+        self.lines = [(ix1 + rng.uniform(0, 2.4 * span), rng.uniform(iy0 + 4, iy1 - 4), rng.uniform(30, 110),
+                       rng.uniform(38, 66)) for _ in range(int(span / 26))]
+
+    def draw(self, c):
+        t = c.t
+        S = self.scroll(t)
+        ix0, iy0, ix1, iy1 = self.inner
+        fade = 1 - smooth((t - self.t_fade) / .4)
+        if fade <= 0:
+            return
+        for X, y, kind, size, val, blot in self.marks:
+            x = X - S
+            if x < ix0 - 30 or x > ix1 + 30:
+                continue
+            v = fade_gray(val, fade)
+            if kind == "stain":
+                c.poly("art", jagged_circle(x, y, size, blot, n=12), v)
+            else:
+                c.line("art", [(x, y), (x + size, y + (blot[0] - .5) * 3)], 2, v)
+        g = self.speed(t) / self.vmax                        # speed lines only while it moves
+        if g > .02:
+            for X2, y, length, val in self.lines:
+                x = X2 - 2.4 * S
+                if x + length < ix0 or x > ix1:
+                    continue
+                c.line("art", [(x, y), (x + length * (.5 + .5 * g), y)], 2, fade_gray(val, g * fade))
 
 
 class InkGather(Attack):

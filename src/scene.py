@@ -280,6 +280,10 @@ def paper_mask(t: float, box, grid=None):
         s = paper_spread(t)
         if s <= 0:
             m = (XX >= x) & (XX < x + w) & (YY >= y) & (YY < y + h)
+            push = edge_push(t)
+            if push > .5:                                   # the left edge bowed out by a wall
+                prof = np.sin(np.pi * np.clip((YY - y) / h, 0, 1)) ** .8
+                m |= (XX < x) & (XX >= x - push * prof) & (YY >= y) & (YY < y + h)
             return m, None
         r0, r1, moving = (x, y, x + w, y + h), big, s
     else:
@@ -291,10 +295,28 @@ def paper_mask(t: float, box, grid=None):
     return ragged < 0, (ragged > -5) & (ragged < 0)
 
 
+def paper_grain(t):
+    """The paper's grain, slid left with the sheet during the run (C.paper_scroll)."""
+    off = int(round(C.paper_scroll(t))) % W
+    return PAPER if off == 0 else np.roll(PAPER, -off, axis=1)
+
+
+def edge_push(t):
+    """How far (px) the paper's left edge bulges out: a wall drunk there kicks it
+    out, it springs back with a little wobble."""
+    amp = 0.0
+    for tp, a0 in C.EDGE_PUSH:
+        a = t - tp
+        if 0 <= a < .6:
+            amp += a0 * (math.sin(a / .05 * math.pi / 2) if a < .05
+                         else math.exp(-(a - .05) * 9) * math.cos((a - .05) * 26))
+    return max(0.0, amp)
+
+
 def compose_canvas(frame, t, tl, box, ctx, under_top=None):
     pm, rim = paper_mask(t, box)
     compose_canvas.pm = pm
-    g = PAPER
+    g = paper_grain(t)
     paper = np.clip(255 - g, 0, 255).astype(np.uint8)
     frame[pm] = paper[pm]
     if rim is not None:
@@ -454,11 +476,12 @@ def overscan(frame, t, tl, box):
     global _PLANE_TEX
     P = fx_pad()
     Hp, Wp = H + 2 * P, W + 2 * P
-    if _PLANE_TEX is None:
-        tex = np.clip(255 - np.pad(PAPER, P, mode="wrap"), 0, 255).astype(np.uint8)
+    off = int(round(C.paper_scroll(t))) % W                  # same grain as on screen (slid in the run)
+    if _PLANE_TEX is None or _PLANE_TEX[2] != off:
+        tex = np.clip(255 - np.pad(paper_grain(t), P, mode="wrap"), 0, 255).astype(np.uint8)
         yy, xx = np.mgrid[-P:H + P, -P:W + P]
-        _PLANE_TEX = (tex, (xx, yy, np.pad(_EDGE, P, mode="wrap")))
-    tex, grid = _PLANE_TEX
+        _PLANE_TEX = (tex, (xx, yy, np.pad(_EDGE, P, mode="wrap")), off)
+    tex, grid, _ = _PLANE_TEX
     paper, rim = paper_mask(t, box, grid)
     plane = np.full((Hp, Wp), tl.flash(t), np.uint8)
     plane[paper] = tex[paper]

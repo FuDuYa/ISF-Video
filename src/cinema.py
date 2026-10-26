@@ -266,6 +266,10 @@ def apply(frame: np.ndarray, t: float) -> np.ndarray:
         out = fx.vignette(out, .45 * g)
         k = sum(1 for s in TRIPLETS if s <= t)
         out = fx.ghost(out, 6 if k % 2 else -6, .28 * g)
+    for T in C.RUN_WALLS:                            # a wall rushing past: speed lines down both sides
+        if T - .02 <= t < T + .45:
+            g = smooth((t - T + .02) / .04) * (1 - smooth((t - T) / .45))
+            out = fx.run_lines(out, t, T, g, seed=int(T * 1000))
     if CRISIS[0] <= t < CRISIS[1] and SOUL is not None:
         out = _crisis(out, t, p)
     for t0, dur, s in GLITCH:
