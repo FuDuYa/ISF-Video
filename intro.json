@@ -1,0 +1,63 @@
+{
+  "duration": 11.9,
+  "fps": 60,
+  "export": {
+    "width": 1920,
+    "height": 1080,
+    "viewport_width": 1440,
+    "viewport_height": 1080,
+    "left_bar": 240,
+    "right_bar": 240
+  },
+  "music": "Music/Larva.mp3",
+  "audio_fade_out": 0.12,
+  "timing": {
+    "source": "maidata.txt",
+    "bpm": 202,
+    "offset_seconds": 0.0,
+    "button_hits": [1.188118812, 1.633663366, 2.079207921, 2.524752475],
+    "edge_hits": [3.564356436, 4.009900990, 4.455445545, 4.900990099],
+    "soul_hit": 5.346534653,
+    "chart_notes": ["3h[8:3]", "4h[8:3]", "5h[8:3]", "6h[8:7]", "3>6[4:5]", "6", "5", "4", "8b"]
+  },
+  "animation": {
+    "drop_fall": 0.34,
+    "button_form": 0.55,
+    "button_spread": 0.50,
+    "edge_draw": 0.27,
+    "edge_settle": 0.19,
+    "soul_gather": 0.23,
+    "flash_duration": 0.13,
+    "flash_luma": 28,
+    "flash_hit_indices": [0, 1, 2, 3, 4, 5, 6, 7],
+    "hud_start": 5.52,
+    "hud_fade": 0.62,
+    "ink_start": 5.67,
+    "ink_fade": 0.86
+  },
+  "brush": {
+    "fade_start": 7.10,
+    "fade_duration": 0.30,
+    "draw_start": 7.425742574,
+    "side_duration": 0.891089109,
+    "fade_out_start": 11.10,
+    "fade_out_duration": 0.32,
+    "rect": [238, 236, 402, 394],
+    "stroke_luma": 190
+  },
+  "button_order": ["mercy1.png", "item1.png", "act1.png", "fight1.png"],
+  "camera_keys": [
+    { "time": 0.00, "focus": [555, 448], "zoom": 1.27, "pitch": 34, "yaw": 7, "roll": 2 },
+    { "time": 1.188118812, "focus": [555, 448], "zoom": 1.27, "pitch": 34, "yaw": 7, "roll": 2 },
+    { "time": 1.633663366, "focus": [400, 448], "zoom": 1.25, "pitch": 31, "yaw": 4, "roll": 1 },
+    { "time": 2.079207921, "focus": [240, 448], "zoom": 1.23, "pitch": 28, "yaw": -2, "roll": -1 },
+    { "time": 2.524752475, "focus": [87, 448], "zoom": 1.21, "pitch": 25, "yaw": -6, "roll": -2 },
+    { "time": 2.96, "focus": [87, 448], "zoom": 1.18, "pitch": 24, "yaw": -6, "roll": -2 },
+    { "time": 3.25, "focus": [320, 365], "zoom": 0.88, "pitch": 24, "yaw": 6, "roll": 2 },
+    { "time": 3.60, "focus": [320, 310], "zoom": 0.90, "pitch": 22, "yaw": 8, "roll": 1.5 },
+    { "time": 4.92, "focus": [320, 298], "zoom": 0.94, "pitch": 10, "yaw": -5, "roll": -2 },
+    { "time": 5.35, "focus": [320, 285], "zoom": 1.08, "pitch": 0, "yaw": 0, "roll": 0 },
+    { "time": 6.48, "focus": [320, 240], "zoom": 1.00, "pitch": 0, "yaw": 0, "roll": 0 },
+    { "time": 11.90, "focus": [320, 240], "zoom": 1.00, "pitch": 0, "yaw": 0, "roll": 0 }
+  ]
+}
