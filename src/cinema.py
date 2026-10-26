@@ -127,7 +127,10 @@ for m in (21, 21.375, 22, 22.375):                 # the cut paper drops away (�
     KICKS.append(dict(t=tm(m), zoom=.06, pitch=5, decay=10))
 for k in range(12):                                  # each fold / slap of the paper box (折纸立方体)
     KICKS.append(dict(t=tm(23 + k / 12), zoom=.02, roll=1.2 * (1 if k % 2 else -1), decay=16))
-for m in (24, 24.125, 24.25, 24.375):                # the box tumbling like a die lands each turn: a thump
+for k in (1, 2, 3):                                  # the net scored, the top flap creasing up (sixteenths)
+    KICKS.append(dict(t=tm(22.75 + k / 16), zoom=.015, roll=.8 * (1 if k % 2 else -1), decay=18))
+KICKS.append(dict(t=tm(24), zoom=.06, pitch=4, decay=10))                # the lid shuts
+for m in (24.125, 24.25, 24.375):                    # the box tumbling like a die lands each turn: a thump
     KICKS.append(dict(t=tm(m) + .1, zoom=.045, pitch=3, decay=12))
 KICKS.append(dict(t=tm(20.75) + .14, zoom=.05, roll=-3, decay=10))     # the shard hits the soul
 # battle (M17-M24): pairs kick, the break blows it open

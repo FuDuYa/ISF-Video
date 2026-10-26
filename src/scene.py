@@ -114,6 +114,8 @@ def sans_offsets(t: float):
 
 
 def draw_sans(frame: np.ndarray, t: float, tl, gain: float = 1.0, head=None, body=None):
+    if C.INK_GONE[0] <= t < C.INK_GONE[1]:
+        return                                # (he steps out while the camera is too close to see him)
     h, b = sans_pose(t, tl)
     head, body = head or h, body or b
     ox, oy = INK["origin"]

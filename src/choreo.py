@@ -75,6 +75,10 @@ SOUL_SCRIPT = [dict(kind="fly", t0=tm(24.75), dur=KNOCK_DUR, to=KNOCK_TO, hold=W
 CLOSE_IN = [tm(25.75 + k / 4) for k in range(9)]   # the ring lunges in on every beat up to the press
 FIGHT_SELECT = (WALK_ARRIVE, tm(28.5))
 PRESSES = [PRESS_T]                             # FIGHT pressed once, the moment its edge is touched
+# Ink Sans is gone while the camera is right inside the canvas (out of shot) - when
+# it pulls back he is not there; he is back while it is pushed in on the FIGHT cut
+# (out of shot again), so he is simply there once it pulls back after it
+INK_GONE = (DEEP_T, PRESS_T + .15)                  # (the camera starts pulling back from PRESS_T + .2)
 
 # the stars' flow over the battle (backdrop.StarRain): one set, one speed; on
 # every turn they all ease to a stop, turn, and ease back up
@@ -872,21 +876,24 @@ def add_external(tl: Timeline, nxt, seg, g: "Geo"):
             frames.append((t, math.degrees(math.atan2(d[1], d[0])), 18 * (1 if k % 2 else -1), False, tuple(vp)))
     tl.attacks.append(A.SquareTunnel(C0, frames, t_show=tm(20.75) + .1, seed=nxt()))
     # ---- M22.75-M24.75 折纸立方体: the camera pulls back out of the canvas - the
-    #      soul was inside a rectangle all along. The paper round it is scored into
-    #      a box net (M22.875) and folds up round the soul, on the chart's four
-    #      twelfth triplets: the top flap creases up 30/60/90 (key 8, no hazard);
-    #      then the bottom (key 4), left (key 6) and right (key 2) flaps, each
-    #      rising while its strip of floor is washed pale, slap down in three
-    #      panels, one per twelfth (inked black: the hazard) and stand up as walls.
-    #      On the M24 eighths the open box lifts towards us and tumbles like a die,
-    #      90 deg a beat (a full turn); it drops back, the two slides cut an X across
-    #      its floor, and on the break it bursts.
+    #      soul was inside a rectangle all along. On the M22.75 sixteenths the paper
+    #      round it is scored into a box net and the top flap creases up (30/60/90:
+    #      the back wall). On the twelfth triplets the bottom, left and right flaps,
+    #      each rising while its strip of floor is washed pale, slap down in three
+    #      panels (inked black: the hazard) and stand up as walls; on the last
+    #      triplet the lid comes down from the camera and the warning goes up once -
+    #      the pieces of the box that will be cut are marked. The lid shuts on the
+    #      M24 downbeat; the shut box lifts towards us and tumbles like a die, 120 deg
+    #      an eighth (a full turn in three), the marked pieces cut to bits in a
+    #      random order as it turns (cut floor cells: holes of ink); it drops back,
+    #      the two slides cut an X across its floor, and on the break it bursts.
     tw = lambda m, k: tm(m + k / 12)
-    slams = {"bottom": (tm(22.875) + .06, [tw(23.25, k) for k in range(3)]),      # left to right
-             "left": (tw(23.5, 0) - .42, [tw(23.5, k) for k in range(3)]),         # top to bottom
-             "right": (tw(23.75, 0) - .42, [tw(23.75, 2 - k) for k in range(3)])}  # bottom to top
-    box = A.OrigamiBox((g.ix0, g.iy0, g.ix1, g.iy1), DEEP_T, tm(22.875), [tw(23, k) for k in range(3)],
-                       slams, [tm(24), tm(24.125), tm(24.25), tm(24.375)], tm(24.5), tm(24.75), seed=nxt())
+    slams = {"bottom": (tm(22.75) + .02, [tw(23, k) for k in range(3)]),          # left to right
+             "left": (tw(23.25, 0) - .42, [tw(23.25, k) for k in range(3)]),       # top to bottom
+             "right": (tw(23.5, 0) - .42, [tw(23.5, 2 - k) for k in range(3)])}   # bottom to top
+    box = A.OrigamiBox((g.ix0, g.iy0, g.ix1, g.iy1), DEEP_T, tm(22.75), [tm(22.75 + k / 16) for k in (1, 2, 3)],
+                       slams, [tw(23.75, k) for k in range(3)], tm(24), [tm(24.125), tm(24.25), tm(24.375)],
+                       tm(24.5), tm(24.75), seed=nxt())
     tl.attacks.append(box)
     global CUBE
     CUBE = box
