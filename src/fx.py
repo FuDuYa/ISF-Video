@@ -202,30 +202,6 @@ def speed_lines(frame, t, strength, center=(320, 318), seed=0):
     return np.asarray(img).copy()
 
 
-def run_lines(frame, t, t0, strength, seed=0, sides=((0, 205), (435, 640))):
-    """Horizontal speed lines streaking left down both sides of the screen (a wall
-    rushing past in the run). Pure function of t; lightens only."""
-    if strength <= 0:
-        return frame
-    rng = np.random.default_rng(seed)
-    img = Image.new("L", (W, H))
-    d = ImageDraw.Draw(img)
-    for x_lo, x_hi in sides:
-        span = x_hi - x_lo
-        for _ in range(11):
-            y = rng.uniform(16, H - 12)
-            L = rng.uniform(50, 190)
-            v = rng.uniform(1400, 2300)
-            x = x_lo + (rng.uniform(0, span + L) - v * (t - t0)) % (span + L) - L
-            val = int(rng.uniform(95, 205) * strength)
-            d.line([(x, y), (x + L, y)], fill=val, width=int(rng.integers(1, 3)) * 2)
-    lines = np.asarray(img)
-    keep = np.zeros_like(lines)
-    for x_lo, x_hi in sides:
-        keep[:, x_lo:x_hi] = lines[:, x_lo:x_hi]
-    return np.maximum(frame, keep)
-
-
 def ghost(frame, dx, amount):
     if amount <= 0 or dx == 0:
         return frame

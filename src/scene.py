@@ -295,10 +295,16 @@ def paper_mask(t: float, box, grid=None):
     return ragged < 0, (ragged > -5) & (ragged < 0)
 
 
+def _grain_shift(t):
+    dx, dy = C.paper_offset(t)
+    return int(round(dy)) % H, int(round(dx)) % W
+
+
 def paper_grain(t):
-    """The paper's grain, slid left with the sheet during the run (C.paper_scroll)."""
-    off = int(round(C.paper_scroll(t))) % W
-    return PAPER if off == 0 else np.roll(PAPER, -off, axis=1)
+    """The paper's grain, carried along with the sheet in the run and the climb
+    (C.paper_offset)."""
+    sy, sx = _grain_shift(t)
+    return PAPER if sx == 0 and sy == 0 else np.roll(PAPER, (sy, sx), axis=(0, 1))
 
 
 def edge_push(t):
@@ -476,7 +482,7 @@ def overscan(frame, t, tl, box):
     global _PLANE_TEX
     P = fx_pad()
     Hp, Wp = H + 2 * P, W + 2 * P
-    off = int(round(C.paper_scroll(t))) % W                  # same grain as on screen (slid in the run)
+    off = _grain_shift(t)                                    # same grain as on screen (carried along)
     if _PLANE_TEX is None or _PLANE_TEX[2] != off:
         tex = np.clip(255 - np.pad(paper_grain(t), P, mode="wrap"), 0, 255).astype(np.uint8)
         yy, xx = np.mgrid[-P:H + P, -P:W + P]

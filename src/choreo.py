@@ -76,31 +76,48 @@ CLOSE_IN = [tm(25.75 + k / 4) for k in range(9)]   # the ring lunges in on every
 FIGHT_SELECT = (WALK_ARRIVE, tm(28.5))
 PRESSES = [PRESS_T]                             # FIGHT pressed once, the moment its edge is touched
 
-# the run (M17-18): the paper slides left under the canvas like a treadmill, at a
-# little more than the stars' speed; it eases in after the title card and slows
-# to a stop together with the stars as they turn (backdrop: M18.5625)
-RUN_SCROLL = (tm(17), tm(18.5625))
-RUN_SPEED = 520.0
-RUN_WALLS = [tm(17.375), tm(18), tm(18.375), tm(19)]   # a wall fires on each of these
+# the stars' flow over the battle (backdrop.StarRain): one set, one speed; on
+# every turn they all ease to a stop, turn, and ease back up
+STAR_FLOWS = [(tm(17), "left"), (tm(18.5625), "down"), (tm(21), "up"), (tm(23), "down"), (tm(24), "up")]
+STAR_TURN = .5
+CLIMB_T = STAR_FLOWS[1][0]           # the stars turn down: from here on everything comes from above
+
+# the paper moves with the world like a treadmill (a little faster than the
+# stars): left through the run, down through the climb; it eases in after the
+# title card, turns with the stars and stops for good when they turn at M21
+# (the canvas spreads and the tunnel begins)
+PAPER_SPEED = 520.0
+PAPER_STOP = STAR_FLOWS[2][0]
 EDGE_PUSH = []                                  # (t, px): a wall drunk at the left edge pushes it out
+_WAYS = {"left": (-1.0, 0.0), "right": (1.0, 0.0), "up": (0.0, -1.0), "down": (0.0, 1.0)}
 
 
-def paper_speed(t):
-    if not (RUN_SCROLL[0] <= t <= RUN_SCROLL[1]):
-        return 0.0
-    return RUN_SPEED * smooth((t - RUN_SCROLL[0]) / .25) * smooth((RUN_SCROLL[1] - t) / .5)
+def paper_velocity(t):
+    """(vx, vy) px/s of the paper under the canvas."""
+    if not (STAR_FLOWS[0][0] <= t <= PAPER_STOP):
+        return 0.0, 0.0
+    i = max(0, bisect.bisect_right([f[0] for f in STAR_FLOWS], t) - 1)
+    g = smooth((t - STAR_FLOWS[0][0]) / .25)
+    if i > 0:
+        g *= smooth((t - STAR_FLOWS[i][0]) / STAR_TURN)
+    if i + 1 < len(STAR_FLOWS):
+        g *= smooth((STAR_FLOWS[i + 1][0] - t) / STAR_TURN)
+    dx, dy = _WAYS[STAR_FLOWS[i][1]]
+    return dx * PAPER_SPEED * g, dy * PAPER_SPEED * g
 
 
-_SC_T = np.arange(RUN_SCROLL[0] - .05, RUN_SCROLL[1] + .05, 1 / 240)
-_SC_X = np.concatenate([[0.0], np.cumsum([paper_speed(t) for t in _SC_T[:-1]]) / 240])
+_PV_T = np.arange(STAR_FLOWS[0][0] - .05, PAPER_STOP + .05, 1 / 240)
+_PV = np.array([paper_velocity(t) for t in _PV_T])
+_PV_X = np.concatenate([[0.0], np.cumsum(_PV[:-1, 0]) / 240])
+_PV_Y = np.concatenate([[0.0], np.cumsum(_PV[:-1, 1]) / 240])
 
 
-def paper_scroll(t):
-    """How far (px) the paper has slid left by t."""
-    return float(np.interp(t, _SC_T, _SC_X))
+def paper_offset(t):
+    """How far (dx, dy) px the paper has moved by t."""
+    return float(np.interp(t, _PV_T, _PV_X)), float(np.interp(t, _PV_T, _PV_Y))
 
 
-A.PAPER_SCROLL = paper_scroll
+A.PAPER_OFFSET = paper_offset
 
 
 # --------------------------------------------------------------------- sections
@@ -769,7 +786,7 @@ def add_external(tl: Timeline, nxt, seg, g: "Geo"):
     #      a bar writes itself and fires a wall (the gap steps up and down like
     #      ledges); every other tap throws a fast bone at the soul's height
     inner = (g.ix0, g.iy0, g.ix1, g.iy1)
-    strong = [tm(17.375), tm(18), tm(18.375), tm(19)]
+    strong = [tm(17.375), tm(18), tm(18.375)]      # (the M19 downbeat is after the turn: from above)
     bars = []
     for k, t in enumerate(strong):
         use = _wall_rows(g, 8, aim_at(t - .4, g)[1], 1 if k % 2 else -1)
@@ -778,13 +795,12 @@ def add_external(tl: Timeline, nxt, seg, g: "Geo"):
     tl.attacks.append(walls)
     # each wall is drunk at the left edge all at once: it pushes the paper out there
     EDGE_PUSH[:] = [(min(b.t_out for b in bar["bones"]), 12.0) for bar in walls.bars]
-    # the paper itself runs: marks ride past on it, pale speed lines streak by
-    tl.attacks.append(A.PaperRun(inner, paper_scroll, paper_speed, RUN_SPEED, RUN_SCROLL[0], RUN_SCROLL[1],
-                                 tm(19), seed=1718))
+    # the paper itself moves: old pale marks ride past on it
+    tl.attacks.append(A.PaperRun(inner, paper_offset, STAR_FLOWS[0][0], PAPER_STOP, seed=1718))
     run = []
     for n in taps:
         # (no single bones while a wall is sweeping through - they would plug its gap)
-        if tm(17) + 1e-3 < n.t < tm(19) - 1e-3 and not any(-1e-3 < n.t - s_ < .36 for s_ in strong) \
+        if tm(17) + 1e-3 < n.t < CLIMB_T - 1e-3 and not any(-1e-3 < n.t - s_ < .36 for s_ in strong) \
                 and not is_slash(n.t):
             y = float(np.clip(aim_at(n.t - .32, g)[1], g.iy0 + 10, g.iy1 - 10))
             run.append((n.t, (g.x + g.w + 34, y), (-1.0, 0.0)))
@@ -794,11 +810,13 @@ def add_external(tl: Timeline, nxt, seg, g: "Geo"):
     # warning (the walls have their self-writing bar). Own seed: nxt() untouched
     tl.attacks.append(A.InkGather([dict(kind="pt", x=b.S[0], y=b.S[1], t=b.tg) for b in shots_run.bones],
                                   tm(17), seed=1717))
-    # ---- M19-20 CLIMB: everything comes from above - orbs over the arena fire
-    #      down at the soul (the M19 downbeat belongs to the last wall)
+    # ---- CLIMB (from the stars' turn down, M18.5625, to M20.5): everything comes
+    #      from above - orbs over the arena fire down at the soul (not while the
+    #      last wall from the right is still sweeping through: it would plug its gap)
     shots = []
     for n in taps:
-        if tm(19) + 1e-3 < n.t < tm(20.54) - 1e-3 and not is_slash(n.t):
+        if CLIMB_T - 1e-3 <= n.t < tm(20.54) - 1e-3 and not is_slash(n.t) \
+                and not any(-1e-3 < n.t - s_ < .36 for s_ in strong):
             shots.append((n.t, ORB_ABOVE[n.key], aim_at(n.t - .45, g)))
     # (not the last one: the spiral could not catch it, and a bone still flying
     #  after everything has been pulled tight and burst looks wrong)

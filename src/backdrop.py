@@ -407,7 +407,7 @@ class Backdrop:
         # the screen and covers them; they are gone after the burst)
         # the turn to "down" sits on the 16th note at M18.5625 (where the old turn at
         # M19 used to start slowing down), so the whole slow-down/turn comes 0.5 s earlier
-        flows = [(C.tm(17), "left"), (C.tm(18.5625), "down"), (C.tm(21), "up"), (C.tm(23), "down"), (C.tm(24), "up")]
+        flows = C.STAR_FLOWS                     # (the paper moves with them in the run and climb)
         burst = C.tm(24.75)
         sky = StarRain(C.tm(17), burst + .4, flows, V=400.0, n=40, seed=13, windows=[(C.tm(17), burst)])
         self.full = [sky]
