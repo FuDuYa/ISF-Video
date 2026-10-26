@@ -125,8 +125,10 @@ for k in (13, 14, 15):
 KICKS.append(dict(t=tm(20.75), zoom=-.05, decay=9))
 for m in (21, 21.375, 22, 22.375):                 # the cut paper drops away (留白): the floor gives
     KICKS.append(dict(t=tm(m), zoom=.06, pitch=5, decay=10))
-for k in range(12):                                  # each spear through the box
+for k in range(12):                                  # each fold / slap of the paper box (折纸立方体)
     KICKS.append(dict(t=tm(23 + k / 12), zoom=.02, roll=1.2 * (1 if k % 2 else -1), decay=16))
+for m in (24, 24.125, 24.25, 24.375):                # the box tumbling like a die lands each turn: a thump
+    KICKS.append(dict(t=tm(m) + .1, zoom=.045, pitch=3, decay=12))
 KICKS.append(dict(t=tm(20.75) + .14, zoom=.05, roll=-3, decay=10))     # the shard hits the soul
 # battle (M17-M24): pairs kick, the break blows it open
 for n in _notes:

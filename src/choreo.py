@@ -871,32 +871,25 @@ def add_external(tl: Timeline, nxt, seg, g: "Geo"):
             d = target - vp
             frames.append((t, math.degrees(math.atan2(d[1], d[0])), 18 * (1 if k % 2 else -1), False, tuple(vp)))
     tl.attacks.append(A.SquareTunnel(C0, frames, t_show=tm(20.75) + .1, seed=nxt()))
-    # ---- M22.75-M24.75 THE CUBE: the camera pulls back out of the canvas - the
-    #      soul was inside a rectangle all along. On M23 it grows depth and we see
-    #      box and soul in 3D from one fixed angle (no turning yet): on every twelfth
-    #      after the first a bone flies through it, three at a time from one side
-    #      (the chart's key triplets), aimed at the soul, which dodges on the front face. Only on
-    #      the M24 eighths does it start to turn - and every turn a slash cuts it;
-    #      the two slides cut an X across its front, then it bursts.
-    Y0, P0 = 28.0, -18.0                                    # the fixed 3D view
-    steps = [(tm(22.75), 0.0, 0.0), (tm(23), Y0, P0)]
-    side_of_key = {8: "-x", 4: "+y", 6: "-z", 2: "+x"}     # left / bottom / front / right
-    bones = []
-    # (the first twelfth is the box growing depth itself; a bone on each one after)
-    for n in sorted((n for n in taps if tm(23) + 1e-3 <= n.t < tm(24) - 1e-3), key=lambda n: n.t):
-        bones.append((n.t, side_of_key.get(n.key, "-x"), aim_at(n.t - .4, g)))
-    slashes = []
-    for mm, cut, yw, pt in ((24, (("+x", 0), ("-x", 1)), 90, 22), (24.125, (("+y", 0), ("-y", 1)), 180, -26),
-                            (24.25, (("-z", 0), ("+z", 1)), 270, 14), (24.375, (("+x", 1), ("-x", 0)), 450, -12)):
-        steps.append((tm(mm), Y0 + yw, float(pt)))
-        slashes += [(tm(mm), f, dg) for f, dg in cut]
-    steps.append((tm(24.5), Y0 + 720.0, P0))                # back to the 3D view for the X
-    slashes += [(tm(24.5), "-z", 0), (tm(24.5), "-z", 1)]
-    cube = A.CanvasCube((g.ix0, g.iy0, g.ix1, g.iy1), DEEP_T, tm(23), steps, bones, tm(24.75),
-                        seed=nxt(), slashes=slashes)
-    tl.attacks.append(cube)
+    # ---- M22.75-M24.75 折纸立方体: the camera pulls back out of the canvas - the
+    #      soul was inside a rectangle all along. The paper round it is scored into
+    #      a box net (M22.875) and folds up round the soul, on the chart's four
+    #      twelfth triplets: the top flap creases up 30/60/90 (key 8, no hazard);
+    #      then the bottom (key 4), left (key 6) and right (key 2) flaps, each
+    #      rising while its strip of floor is washed pale, slap down in three
+    #      panels, one per twelfth (inked black: the hazard) and stand up as walls.
+    #      On the M24 eighths the open box lifts towards us and tumbles like a die,
+    #      90 deg a beat (a full turn); it drops back, the two slides cut an X across
+    #      its floor, and on the break it bursts.
+    tw = lambda m, k: tm(m + k / 12)
+    slams = {"bottom": (tm(22.875) + .06, [tw(23.25, k) for k in range(3)]),      # left to right
+             "left": (tw(23.5, 0) - .42, [tw(23.5, k) for k in range(3)]),         # top to bottom
+             "right": (tw(23.75, 0) - .42, [tw(23.75, 2 - k) for k in range(3)])}  # bottom to top
+    box = A.OrigamiBox((g.ix0, g.iy0, g.ix1, g.iy1), DEEP_T, tm(22.875), [tw(23, k) for k in range(3)],
+                       slams, [tm(24), tm(24.125), tm(24.25), tm(24.375)], tm(24.5), tm(24.75), seed=nxt())
+    tl.attacks.append(box)
     global CUBE
-    CUBE = cube
+    CUBE = box
 
 
 def add_slashes(tl: Timeline, nxt, seg, g: "Geo"):

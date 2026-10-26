@@ -2797,6 +2797,331 @@ class CanvasCube(Attack):
             c.circle("art", self.C[0], self.C[1], 30 + 300 * a, fade_gray(140, 1 - a / .12))
 
 
+class OrigamiBox(Attack):
+    """折纸立方体 (M22.75-M24.75). The soul was in a rectangle all along (the reveal);
+    the paper round it is scored into a box net - four flaps hinged on the
+    rectangle's edges - and folds up into an open box around the soul:
+      - the top flap creases up in three steps (30/60/90 deg): the back wall;
+      - each other flap rises while the strip of floor it is going to hit is
+        washed pale (the warning), then slaps down onto the floor in three panels,
+        one per twelfth - the panel's back is black ink: that is the hazard - and
+        springs back up to stand as a wall;
+      - on the eighths the open box lifts off the sheet towards us and tumbles
+        like a die, 90 deg a beat, a full turn in four (a cross-shaped hole is
+        left in the paper); it drops back in place, an X is cut across its floor,
+        and it bursts apart.
+    The floor is the rectangle itself and stays square to the screen whenever it
+    matters, so hazards are drawn in plain screen / plan coordinates; everything
+    rising off it is seen in perspective (vanishing point VP)."""
+
+    SIDES = ("top", "bottom", "left", "right")
+    SOUL_T = 10.0
+
+    def __init__(self, inner, t_reveal, t_score, fold_top, slams, rolls, slash_t, t_burst,
+                 height=70.0, D=300.0, vp=(-20.0, 30.0), roll_axis=(1.0, .55, 0.0), lift=22.0, seed=0):
+        x0, y0, x1, y1 = inner
+        self.C = np.array([(x0 + x1) / 2, (y0 + y1) / 2])
+        self.W, self.H, self.h = x1 - x0, y1 - y0, height
+        self.D, self.VP = D, self.C + np.asarray(vp, float)
+        self.tr, self.ts, self.tb = t_reveal, t_score, t_burst
+        self.tx = t_score                                   # (scene: the soul is solid from here on)
+        self.fold_top = list(fold_top)
+        self.slams = slams                                  # side -> (t_lift, [t_slam of panel 0, 1, 2])
+        self.rolls = list(rolls)
+        self.slash_t = slash_t
+        a = np.asarray(roll_axis, float)
+        self.axis = a / np.linalg.norm(a)
+        self.LIFT = lift
+        self.pivot = np.array([0.0, 0.0, -height / 2])
+        rng = np.random.default_rng(seed)
+        self.frag = rng.uniform(-1, 1, (20, 4))
+        self.t0, self.t1 = t_reveal, t_burst + .8
+        self.impact = t_burst
+        self.shake = 6.0
+
+    # ------------------------------------------------------------ the folds
+    @staticmethod
+    def _back(u, s=1.6):
+        u = clamp(u)
+        return 1 + (s + 1) * (u - 1) ** 3 + s * (u - 1) ** 2
+
+    def theta(self, side, i, t):
+        """Fold angle (deg) of panel i of a flap: 0 flat on the sheet, 90 a wall,
+        180 down on the floor."""
+        if side == "top":
+            th = 0.0
+            for k, tk in enumerate(self.fold_top):
+                if t < tk:
+                    break
+                th += (30.0 * (k + 1) - th) * self._back((t - tk) / .07)
+            return th
+        t_lift, slam = self.slams[side]
+        if t < t_lift:
+            return 0.0
+        ts = slam[i]
+        first = min(slam)
+        th = 100.0 * smooth((t - t_lift) / max(.05, first - .05 - t_lift))   # rises, poised past upright
+        if t < ts - .05:
+            if t > ts - .2:                                 # it shivers just before it strikes
+                th += 3.0 * math.sin(t * 90 + i)
+            return th
+        if t < ts:                                          # comes down hard
+            u = (t - (ts - .05)) / .05
+            return th + (180.0 - th) * u * u
+        if t < ts + .06:
+            return 180.0
+        return 180.0 + (90.0 - 180.0) * self._back((t - ts - .06) / .14, 1.2)   # springs back up: a wall
+
+    def panel_range(self, side, i):
+        if side in ("top", "bottom"):
+            return -self.W / 2 + self.W * i / 3, -self.W / 2 + self.W * (i + 1) / 3
+        return -self.H / 2 + self.H * i / 3, -self.H / 2 + self.H * (i + 1) / 3
+
+    def flap_point(self, side, a, s, th):
+        """Box-local point on a flap: `a` along its hinge, `s` out from it."""
+        c, sn = math.cos(math.radians(th)), math.sin(math.radians(th))
+        W2, H2 = self.W / 2, self.H / 2
+        if side == "top":
+            return np.array([a, -H2 - s * c, -s * sn])
+        if side == "bottom":
+            return np.array([a, H2 + s * c, -s * sn])
+        if side == "left":
+            return np.array([-W2 - s * c, a, -s * sn])
+        return np.array([W2 + s * c, a, -s * sn])
+
+    def strip(self, side, i):
+        """The floor strip panel i covers when it is down (plan / screen coords)."""
+        a0, a1 = self.panel_range(side, i)
+        W2, H2, h = self.W / 2, self.H / 2, self.h
+        cx, cy = self.C
+        if side == "top":
+            return cx + a0, cy - H2, cx + a1, cy - H2 + h
+        if side == "bottom":
+            return cx + a0, cy + H2 - h, cx + a1, cy + H2
+        if side == "left":
+            return cx - W2, cy + a0, cx - W2 + h, cy + a1
+        return cx + W2 - h, cy + a0, cx + W2, cy + a1
+
+    # ------------------------------------------------------------ the tumble
+    def pose(self, t):
+        """(rotation, lift): the box turns about its middle and floats towards us
+        while it tumbles; square on the sheet otherwise."""
+        if not self.rolls or t < self.rolls[0] - .06 or t >= self.tb:
+            return np.eye(3), 0.0, 1.0
+        ang = 0.0
+        for tk in self.rolls:
+            if t >= tk:
+                ang += 90.0 * self._back((t - tk) / .1, 1.3)
+        a = math.radians(ang)
+        x, y, z = self.axis
+        K = np.array([[0, -z, y], [z, 0, -x], [-y, x, 0]])
+        R = np.eye(3) + math.sin(a) * K + (1 - math.cos(a)) * (K @ K)
+        last = self.rolls[-1] + .1
+        up = smooth((t - (self.rolls[0] - .06)) / .08) * (1 - smooth((t - last) / (self.slash_t - last)))
+        return R, -self.LIFT * up, 1 - .22 * up
+
+    def project(self, p, t, pose=None):
+        R, lift, sc = pose if pose is not None else self.pose(t)
+        q = (R @ (np.asarray(p, float) - self.pivot)) * sc + self.pivot
+        q[2] += lift
+        k = self.D / max(40.0, self.D + q[2])
+        return self.VP + (self.C + q[:2] - self.VP) * k, q[2], k
+
+    def soul_view(self, xy, t):
+        if not (self.tx <= t < self.tb):
+            return np.asarray(xy, float), 1.0
+        p, _, k = self.project((xy[0] - self.C[0], xy[1] - self.C[1], 0.0), t)
+        return p, k
+
+    def soul_layers(self, xy, t):
+        """The soul as a solid heart lying on the floor (one slice per pixel of
+        thickness, dark sides, a lit cap), in the box's perspective."""
+        from common import Sprite
+        src = sprite("player.png")
+        mask = src.a
+        cap = src.v.copy()
+        cap[3:6, 3:5] = 200
+        cap[2, 4], cap[6, 3], cap[3, 5] = 150, 150, 150
+        sx, sy = xy[0] - self.C[0], xy[1] - self.C[1]
+        sq = [(-8, -8), (8, -8), (8, 8), (-8, 8)]
+        n = int(self.SOUL_T)
+        pose = self.pose(t)
+        W2, H2 = self.W / 2, self.H / 2
+        fl = [self.project((x, y, 0.0), t, pose)[0] for x, y in ((-W2, -H2), (W2, -H2), (W2, H2), (-W2, H2))]
+        if sum(fl[k][0] * fl[(k + 1) % 4][1] - fl[(k + 1) % 4][0] * fl[k][1] for k in range(4)) < .45 * 2 * self.W * self.H:
+            return []                                        # the floor is turned away / edge on: the box hides it
+        layers = []
+        for i in range(n + 1):
+            P = [self.project((sx + u, sy + v, -float(i)), t, pose) for u, v in sq]
+            quad = np.array([p for p, _, _ in P])
+            zr = float(np.mean([zz for _, zz, _ in P]))
+            val = cap if i == n else np.full_like(src.v, 18 + 2 * i)
+            spr = warp_sprite(val, mask, quad)
+            if spr is not None:
+                layers.append((zr, i, spr))
+        layers.sort(key=lambda e: (-e[0], e[1]))
+        return [(s, x0, y0) for _, _, (s, x0, y0) in layers]
+
+    # ------------------------------------------------------------ drawing
+    def _net_quads(self):
+        """The flat net on the sheet: [(side, i, corners)] (screen coords)."""
+        out = []
+        for side in self.SIDES:
+            for i in range(3):
+                a0, a1 = self.panel_range(side, i)
+                pts = [self.flap_point(side, a, s, 0.0) for a, s in ((a0, 0), (a1, 0), (a1, self.h), (a0, self.h))]
+                out.append((side, i, [self.C + p[:2] for p in pts]))
+        return out
+
+    def draw(self, c):
+        t = c.t
+        if t < self.tr:
+            return
+        if t >= self.tb:
+            return self.draw_burst(c, t)
+        W2, H2 = self.W / 2, self.H / 2
+        base = [self.C + np.array(v) for v in ((-W2, -H2), (W2, -H2), (W2, H2), (-W2, H2))]
+        if t < self.ts:                                      # the rectangle is simply there (the reveal)
+            c.line("art", base + [base[0]], 6, 255)
+            return
+        pose = self.pose(t)
+        lifted = pose[1] < -.5
+        # --- the sheet: the net scored into it; holes where the paper has gone up
+        sc = clamp((t - self.ts) / .1)
+        for side, i, q in self._net_quads():
+            up = self.theta(side, i, t) > 3 or lifted
+            if up:
+                c.poly("art", q, 135)                        # the shadowed underneath of the sheet
+            else:
+                seg = [q[1], q[2], q[3], q[0]]                # (the hinge, q0-q1, is the floor's crease)
+                n = len(seg) - 1
+                for j in range(n):                           # cut lines drawn out from the corners
+                    p0, p1 = seg[j], seg[j + 1]
+                    c.line("art", [p0, p0 + (p1 - p0) * sc], 3, 150)
+        if lifted:
+            c.poly("art", base, 135)
+        # --- the box: floor, warnings, flaps - far to near
+        quads = []
+        fl = [self.project((x - self.C[0], y - self.C[1], 0.0), t, pose) for x, y in base]
+        quads.append((np.mean([z for _, z, _ in fl]), "floor", None, [p for p, _, _ in fl], 0.0))
+        for side in self.SIDES:
+            for i in range(3):
+                th = self.theta(side, i, t)
+                if th <= 3 and not lifted:
+                    continue
+                a0, a1 = self.panel_range(side, i)
+                P = [self.project(self.flap_point(side, a, s, th), t, pose)
+                     for a, s in ((a0, 0), (a1, 0), (a1, self.h), (a0, self.h))]
+                quads.append((np.mean([z for _, z, _ in P]), side, i, [p for p, _, _ in P], th))
+        quads.sort(key=lambda e: -e[0])
+        for z, side, i, pts, th in quads:
+            if side == "floor":
+                up = sum(pts[k][0] * pts[(k + 1) % 4][1] - pts[(k + 1) % 4][0] * pts[k][1] for k in range(4)) > 0
+                c.poly("art", pts, 10 if up else 92)             # (its underside is the grey outside)
+                c.line("art", pts + [pts[0]], 5, 200)        # the creases it folds on (dark grey, harmless)
+                if not lifted:
+                    self.draw_warnings(c, t)
+                self.draw_slash(c, t, pose)
+                continue
+            area = sum(pts[k][0] * pts[(k + 1) % 4][1] - pts[(k + 1) % 4][0] * pts[k][1] for k in range(4))
+            inside = area * self._flat_sign(side) > 0
+            hot = th >= 165 and not lifted
+            if hot:
+                fill, edge = 255, 255                        # the inked back of a flap slapping down
+            elif inside:
+                fill, edge = int(14 + 34 * abs(math.sin(math.radians(th)))), 175
+            else:
+                fill, edge = 92, 175
+            c.poly("art", pts, fill)
+            c.line("art", pts + [pts[0]], 3, edge)
+            if hot:
+                x0, y0, x1, y1 = self.strip(side, i)
+                c.rect("haz", x0 + 2, y0 + 2, x1 - 2, y1 - 2, 255)
+
+    def _flat_sign(self, side):
+        if not hasattr(self, "_fs"):
+            self._fs = {}
+            for s, i, q in self._net_quads():
+                if i == 0:
+                    self._fs[s] = 1 if sum(q[k][0] * q[(k + 1) % 4][1] - q[(k + 1) % 4][0] * q[k][1]
+                                           for k in range(4)) > 0 else -1
+        return self._fs[side]
+
+    def draw_warnings(self, c, t):
+        """Pale strips on the floor where a flap is about to slap down; they blink
+        just before it does."""
+        for side, (t_lift, slam) in self.slams.items():
+            for i, ts in enumerate(slam):
+                if not (t_lift <= t < ts):
+                    continue
+                late = t > ts - .1
+                val = (96 if int(t * 60) % 4 < 2 else 60) if late else int(46 * smooth((t - t_lift) / .12))
+                x0, y0, x1, y1 = self.strip(side, i)
+                c.rect("art", x0 + 3, y0 + 3, x1 - 3, y1 - 3, val)
+
+    def draw_slash(self, c, t, pose):
+        """The X across the floor on the M24.5 slides: a wash of ink first."""
+        a = t - self.slash_t
+        if a < -.38:
+            return
+        hw, hh = self.W / 2 * .78, self.H / 2 * .78
+        for sgn in (1, -1):
+            p0, p1 = np.array([-hw, -hh * sgn, 0.0]), np.array([hw, hh * sgn, 0.0])
+            n = 16
+            pts = [self.project(p0 + (p1 - p0) * j / n, t, pose) for j in range(n + 1)]
+            if a < 0:
+                late = a > -.14
+                val = (150 if int(t * 60) % 4 < 2 else 96) if late else 100
+                for (q0, _, k0), (q1, _, _) in zip(pts, pts[1:]):
+                    c.line("art", [q0, q1], 12 * k0, val)
+                continue
+            m = max(1, int(n * clamp(a / .05)))
+            for j in range(m):
+                (q0, _, k0), (q1, _, _) = pts[j], pts[j + 1]
+                w = 11 * k0 * (1.15 - .5 * j / n)
+                c.line("art", [q0, q1], w, 255)
+                c.circle("art", q0[0], q0[1], w, 255)
+            c.line("haz", [self.C + p0[:2], self.C + p1[:2]], 10, 255)
+
+    def draw_burst(self, c, t):
+        """The box bursts: walls and floor fly apart, turning and fading (pale,
+        harmless); the hole in the sheet closes over."""
+        a = t - self.tb
+        g = 1 - smooth(a / .6)
+        if g <= 0:
+            return
+        tf = self.tb - 1e-3
+        W2, H2 = self.W / 2, self.H / 2
+        pieces = [[self.project((x, y, 0.0), tf)[0] for x, y in ((-W2, -H2), (W2, -H2), (W2, H2), (-W2, H2))]]
+        for side in self.SIDES:
+            for i in range(3):
+                a0, a1 = self.panel_range(side, i)
+                th = self.theta(side, i, tf)
+                pieces.append([self.project(self.flap_point(side, aa, s, th), tf)[0]
+                               for aa, s in ((a0, 0), (a1, 0), (a1, self.h), (a0, self.h))])
+        for k, pts in enumerate(pieces):
+            m = np.mean(pts, axis=0)
+            out = m - self.C
+            out = out / (np.linalg.norm(out) + 1e-9) if k else np.array([0.0, 1.0])
+            f = self.frag[k]
+            off = out * (300 + 140 * f[0]) * a + np.array([f[1] * 60, 420 * a * a])
+            rot = f[2] * 7 * a
+            cr, sr = math.cos(rot), math.sin(rot)
+            s = (1 - .55 * a) * (.6 if k == 0 else 1.0)
+            q = [m + off + np.array([(p - m)[0] * cr - (p - m)[1] * sr, (p - m)[0] * sr + (p - m)[1] * cr]) * s
+                 for p in pts]
+            c.poly("art", q, fade_gray(40, g))
+            c.line("art", q + [q[0]], 3, fade_gray(120, g))
+        hole = 1 - smooth(a / .12)                           # the hole in the sheet closes over at once
+        if hole > 0:
+            for side, i, q in self._net_quads():
+                c.poly("art", q, fade_gray(135, hole))
+            c.poly("art", [self.C + np.array(v) for v in ((-W2, -H2), (W2, -H2), (W2, H2), (-W2, H2))],
+                   fade_gray(135, hole))
+        if a < .12:
+            c.circle("art", self.C[0], self.C[1], 30 + 300 * a, fade_gray(140, 1 - a / .12))
+
+
 # ======================================================================
 # The rest after the cube (M25-M28.5): the canvas now wraps the buttons too;
 # the soul goes to FIGHT and strikes Ink Sans again and again - every slash is
