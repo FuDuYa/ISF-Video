@@ -5,7 +5,7 @@
 #   1. 拉取 GitHub 上的最新代码（只快进；你本地没提交的改动不会被覆盖，拉不下来就用本地代码继续）
 #   2. 第一次运行时自动建好 Python 环境（.venv）；requirements.txt 变了会自动补装
 #   3. 代码、谱面、贴图有变化（或者还没规划过）就先跑走位规划 plan.py（约 2 分钟），没变就跳过
-#   4. 渲染 output/preview-<开始>-<结束>s.mp4，完成后自动打开
+#   4. 渲染 output/preview-<开始>-<结束>s-<年月日-时分秒>.mp4（每次一个新文件，不覆盖旧的），完成后自动打开
 #
 # 时间范围（秒）：命令后面的两个参数 > render_range.txt 里的“开始 结束” > 默认 0 33.85
 # 不想拉取代码：NO_PULL=1 bash 一键生成视频.command
@@ -80,7 +80,7 @@ else
 fi
 
 # ---- 4. 渲染 ----
-OUT="output/preview-${START}-${END}s.mp4"
+OUT="output/preview-${START}-${END}s-$(date +%Y%m%d-%H%M%S).mp4"
 echo "== 渲染 ${START}–${END} 秒 -> ${OUT} =="
 .venv/bin/python src/render.py --start "$START" --end "$END" --out "$OUT" || fail "渲染失败"
 echo
