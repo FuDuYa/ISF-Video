@@ -138,7 +138,7 @@ _INK_N2 = _noise_field(42, (40, 52))
 _INK_ANG = np.random.default_rng(43).uniform(-1, 1, 11)
 
 
-def crisis_ink(frame, t, centre, radius, throb=0.0, splats=()):
+def crisis_ink(frame, t, centre, radius, throb=0.0, splats=(), gain=1.0):
     """Screen-wide ink closing in on `centre` (the soul on screen): smoky, ragged
     ink creeps in from every edge, leaving a clear hole of about `radius` px round
     the soul (pale at its rim, dark grey - never solid black - at the edges).
@@ -173,6 +173,7 @@ def crisis_ink(frame, t, centre, radius, throb=0.0, splats=()):
             run = r * (.6 + 2.4 * smooth(min(1.0, age / 1.0))) * rr.uniform(.6, 1.2)
             blob |= (np.abs(_XX - hx) < max(2, r * .12)) & (_YY > y) & (_YY < y + run)
         a = np.maximum(a, blob * .82 * fade)
+    a = a * gain                                             # (it seeps in and out, never pops)
     out = frame.astype(np.float32) * (1 - a) + 14 * a
     return np.clip(out, 0, 255).astype(np.uint8)
 

@@ -202,8 +202,8 @@ TITLE_CUTS = 3          # the first cuts (inside the M15 triplets) show the titl
 # ink closes in over the whole screen too, just as slowly and smoothly - creeping
 # from the edges round the soul; blots seep onto the lens and run down; the one
 # FIGHT slash drives it all back
-CRISIS = (C.CLOSE_IN[0] - .3, C.PRESS_T + .35)
-_CR_FAR, _CR_NEAR = 330.0, 66.0                      # clear radius (screen px) at the start / the press
+CRISIS = (C.CLOSE_IN[0] - .3, C.PRESS_T + .5)
+_CR_FAR, _CR_NEAR = 500.0, 66.0                      # clear radius (screen px): from past the screen's corners / at the press
 
 
 def _crisis_level(t):
@@ -214,8 +214,8 @@ def _crisis_level(t):
 def _crisis(out, t, p):
     after = t - C.PRESS_T
     lv = _crisis_level(min(t, C.PRESS_T))
-    if after > 0:                                    # the slash drives it all back
-        lv *= 1 - out_cubic(clamp(after / .3))
+    if after > 0:                                    # the slash drives it all back (smoothly, not in one jump)
+        lv *= 1 - smooth(after / .45)
     if lv <= .001:
         return out
     radius = _CR_FAR - (_CR_FAR - _CR_NEAR) * lv
@@ -234,7 +234,8 @@ def _crisis(out, t, p):
             age = (t - L) + (3 * after if after > 0 else 0)
             splats.append((lx + math.cos(ang) * dist * 1.2, ly + math.sin(ang) * dist,
                            rng.uniform(14, 30), age, 900 + k * 10 + j))
-    return fx.crisis_ink(out, t, (sx, sy), radius, 0.0, splats)
+    gain = smooth((t - CRISIS[0]) / .8) * (1 - smooth((t - (CRISIS[1] - .4)) / .4))
+    return fx.crisis_ink(out, t, (sx, sy), radius, 0.0, splats, gain)
 
 
 _SLICES = None
