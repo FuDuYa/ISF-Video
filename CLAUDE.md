@@ -145,7 +145,9 @@ README.md 里也有模块说明，但它的段落表（0–147 s 那张）、“
   .venv/bin/python src/render.py --sheet 30 32 --n 16 --out /tmp/sheet.png    # 30–32 s 的 16 格联系表（自己检查）
   .venv/bin/python src/render.py --still 31.2                      # 某一时刻的 1080p 静帧
   ```
-- `render_mac.command`：读 `render_range.txt`（“开始 结束”秒数）渲染并自动打开视频；也可 `bash render_mac.command 0 33.85`。
+- **`一键生成视频.command`（用户平时用这个）**：双击即可。先 `git pull --ff-only` 拉最新代码（拉不下来就用本地代码继续），没有 `.venv` 就建好、`requirements.txt` 变了就补装；把 `src/*.py`、`maidata.txt`、`scene.json`、`sprite/` 算一个哈希存在 `output/plan.sig`，变了（或没有 `plan.npz` / `aim.npy`）才重跑 `plan.py`；然后按参数 / `render_range.txt` / 默认 0 33.85 渲染 `output/preview-<start>-<end>s.mp4` 并自动打开。`NO_PULL=1` 可以跳过拉取。
+- `render_mac.command`：旧脚本，只渲染不规划（没有 `output/plan.npz` 时会报错）；读 `render_range.txt`（“开始 结束”秒数）渲染并自动打开视频；也可 `bash render_mac.command 0 33.85`。
+- 代码仓库：`github.com/FuDuYa/ISF-Video`。`output/`、`.venv/` 不进仓库，所以新克隆或拉取后第一次渲染前一定要先跑 `plan.py`（一键脚本会自动处理）。
 - 检查画面时，可以在 Python 里 `import render as R; R.init(); R.frame(int(t*60))` 拿到单帧（640×480 灰度数组，已含镜头），拼图后自己看。
 
 ## 9. 代码地图
