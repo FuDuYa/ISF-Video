@@ -141,6 +141,21 @@ def close_progress(t, t0, t1):
     return .45 * u + .55 * smooth(u)
 
 
+def ink_bloom(c, q, a, dur, r0, r1, val, blot):
+    """Ink spreading into the paper where a bone crossed its edge: a ragged blot
+    that grows from r0 to r1 over `dur` s and pales as it spreads (as ink does when
+    it bleeds into wet paper), its rim a little darker than its middle (the pigment
+    pushed out to the edge of the bloom). Nothing left once it has spread."""
+    if not (0 <= a < dur):
+        return
+    u = a / dur
+    r = r0 + (r1 - r0) * out_cubic(u)
+    g = 1 - u
+    c.poly("art", jagged_circle(q[0], q[1], r, blot, n=12), fade_gray(val, g))
+    if r > 4:
+        c.poly("art", jagged_circle(q[0], q[1], r * .62, blot[::-1], n=12), fade_gray(val * .62, g))
+
+
 def fade_gray(value: float, gain: float) -> int:
     return int(max(0, min(255, round(value * clamp(gain)))))
 
@@ -1536,39 +1551,21 @@ class FlyingBone:
             if self.trail:                                  # afterimage: the speed of the run
                 speed_trail(c, self.S + self.d * max(0.0, tail), self.d, min(80.0, max(0.0, tail) + 10))
             put_bone_line(c, self.S + self.d * tail, self.S + self.d * head)
-        # pale splash where it crossed into the paper (harmless; carried off by the paper)
+        # ink spreading into the paper where it crossed in (harmless; carried off by the paper)
         a = t - self.t_in
         if 0 <= a < .3:
             q = self.S + self.d * self.s_in + np.array(scroll_d(t, self.t_in))
-            c.poly("art", jagged_circle(q[0], q[1], 4 + 12 * out_cubic(a / .3), self.blot, n=10),
-                   fade_gray(105, 1 - a / .3))
+            ink_bloom(c, q, a, .3, 4, 16, 105, self.blot)
         # a pale stain blooms where the paper drank it - at its edge, which is where
         # the paper drinks (it does not ride off with the moving sheet: it would leave
         # the canvas at once and the bone would seem simply to vanish)
-        a = t - (self.t_out - self.L / self.v)               # from the moment its head touches the edge
-        if a >= 0:
-            # the ink it leaves where it goes out spreads flat along the edge, like
-            # water soaking into the paper: a thin, pale, ragged band lying along the
-            # edge (it hardly reaches in), growing longer as it spreads, then drying
-            q = self.S + self.d * (self.s_out - 1.5)
-            e = np.array([-self.d[1], self.d[0]])            # along the edge
-            u = out_cubic(min(1.0, a / .25))
-            g = fade_gray(62, 1 - smooth((a - .25) / .45))
-            half = 4 + 7 * u                                 # along the edge
-            deep = 1.2 + 1.3 * u                             # into the paper
-            pts = []
-            for j in range(12):
-                th = j / 12 * math.tau
-                wob = .75 + .5 * self.blot[j % 14]
-                pts.append(q + e * math.cos(th) * half * wob - self.d * max(0.0, math.sin(th)) * deep * wob * 2
-                           + self.d * min(0.0, math.sin(th)) * .5)
-            c.poly("art", pts, g)
-            if False:                                      # (walls throw their own drop: PenVolleys)
-                for j in range(2):
-                    r = self.blot[j]
-                    v = self.d * (200 + 200 * r) + np.array([0.0, (self.blot[j + 5] - .5) * 260])
-                    px, py = q + v * a + np.array([0.0, 520 * a * a])
-                    c.circle("top", px, py, 2 + 1.5 * r, fade_gray(200, 1 - a / .3))
+        # ...and where it goes out: the same - ink spreading into the paper from the
+        # spot on the edge it went out through, paling as it spreads (it stays where
+        # it went out: the sheet slides on, but the edge is where the paper drinks)
+        a = t - (self.t_out + self.L / (2 * self.v))         # as its middle crosses the edge
+        if 0 <= a < .34:
+            q = self.S + self.d * self.s_out
+            ink_bloom(c, q, a, .34, 3, 12, 90, self.blot)
 
 
 class BoneShots(Attack):
