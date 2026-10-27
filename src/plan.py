@@ -20,7 +20,7 @@ import choreo as C
 import scene as S
 from common import ROOT, FPS
 
-X0, X1, Y0, Y1 = 0, 640, 226, 392       # crop window that contains every arena (the descent: the full width)
+X0, X1, Y0, Y1 = 0, 640, 20, 400        # crop window that contains every arena (the descent: most of the screen)
 T_START = 7.0
 T_END = 146.5
 HALF = 4                                 # 8x8 hitbox
@@ -48,6 +48,37 @@ def valid_mask(box):
     return m
 
 
+class Packed:
+    """One boolean mask per frame, stored packed eight to a byte (the window is
+    big: unpacked, the whole song's masks would not fit in memory); unpacked
+    when asked for, the last few kept."""
+
+    def __init__(self, n, h, w):
+        self.h, self.w = h, w
+        self.bits = np.zeros((n, h, (w + 7) // 8), np.uint8)
+        self.cache = {}
+
+    def __len__(self):
+        return len(self.bits)
+
+    def __getitem__(self, i):
+        if i < 0:
+            i += len(self.bits)
+        m = self.cache.get(i)
+        if m is None:
+            if len(self.cache) > 48:
+                self.cache.clear()
+            m = np.unpackbits(self.bits[i], axis=1, count=self.w).astype(bool)
+            self.cache[i] = m
+        return m
+
+    def __setitem__(self, i, m):
+        if i < 0:
+            i += len(self.bits)
+        self.bits[i] = np.packbits(m, axis=1)
+        self.cache.pop(i, None)
+
+
 class Valid:
     """Where the soul may be in each frame: inside the arena. Only the boxes are
     kept (a mask per frame of the full width would take too much memory); the
@@ -72,7 +103,7 @@ class Valid:
 def safe_masks(tl):
     f0, f1 = frame_range()
     n = f1 - f0 + 1
-    safe = np.zeros((n, Y1 - Y0, X1 - X0), bool)
+    safe = Packed(n, Y1 - Y0, X1 - X0)
     boxes = []
     for i in range(n):
         t = (f0 + i) / FPS
@@ -91,8 +122,8 @@ def safe_masks(tl):
 
 def backward(safe, valid):
     n = len(safe)
-    surv = np.zeros_like(safe)
-    surv[-1] = safe[-1]
+    surv = Packed(n, safe.h, safe.w)
+    surv[n - 1] = safe[n - 1]
     broken = []
     foot = np.ones((2 * SPEED + 1, 2 * SPEED + 1), bool)
     for i in range(n - 2, -1, -1):

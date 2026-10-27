@@ -60,7 +60,7 @@ def _tunnel_push(z0=1.08, n=14):
 def _sink_focus(t):
     """The descent: the camera leans a quarter of the way after the sliding arena."""
     dx, dy, _, _ = C.arena_state(t)
-    return (320 + .25 * dx, 290 + .2 * dy)
+    return (320 + .25 * dx, 240 + .2 * (dy - C.CY))
 
 
 KEYS = [
@@ -121,9 +121,9 @@ KEYS = [
     dict(t=tm(28.5), focus=(320, 240), zoom=1.0, pitch=0, yaw=0, roll=0, ease="smooth"),   # (no jolt as it starts)
     # the descent: a slight lean down as we sink, then after the arena
     dict(t=C.RISE[0], focus=(320, 240), zoom=1.0, pitch=0, yaw=0, roll=0),
-    dict(t=C.ARRIVE - .05, focus=(320, 270), zoom=1.05, pitch=-5, yaw=0, roll=0, ease="smooth"),
-    dict(t=C.ARRIVE + .3, focus=lambda t: _sink_focus(t), zoom=1.08, pitch=0, yaw=0, roll=0, ease="out"),
-    dict(t=C.NEW_END - .2, focus=lambda t: _sink_focus(t), zoom=1.08, pitch=0, yaw=0, roll=0, ease="linear"),
+    dict(t=C.ARRIVE - .05, focus=(320, 250), zoom=1.03, pitch=-5, yaw=0, roll=0, ease="smooth"),
+    dict(t=C.ARRIVE + .3, focus=lambda t: _sink_focus(t), zoom=1.04, pitch=0, yaw=0, roll=0, ease="out"),
+    dict(t=C.NEW_END - .2, focus=lambda t: _sink_focus(t), zoom=1.04, pitch=0, yaw=0, roll=0, ease="linear"),
 ]
 
 KICKS = [dict(t=CORNERS[4], zoom=.02, decay=14)]
@@ -180,6 +180,10 @@ KICKS.append(dict(t=C.ARRIVE, zoom=.07, pitch=4, decay=9))   # it lands
 for t in (tm(38.875), tm(47)):                       # the breaks: the arena snaps into a new shape
     KICKS.append(dict(t=t, zoom=-.08, roll=2.5, decay=8))
     GLITCH.append((t, .06, .9))
+for t, hard in C.TRANSFORMS:                         # every slam of the canvas to a new side / shape
+    sgn = 1 if int(t * 10) % 2 else -1
+    KICKS.append(dict(t=t + .05, zoom=.05 * hard, roll=2.2 * hard * sgn, yaw=3 * hard * sgn, decay=10))
+    LIFT.append((t + .05, 1 / 60, int(40 * hard)))   # (a frame where the black lifts: the slam)
 
 # triplet run (M15): every note kicks the camera, every triplet group flashes
 TRIPLETS = _times(15, 16)

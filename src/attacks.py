@@ -3873,18 +3873,39 @@ class HuntingInk(Attack):
             rel = rel * (1 + .16 * math.sin(math.pi / 2 * rc))
         return rel
 
+    R_CLOSE = 46.0      # how close it comes in on its run, and stays, swaying, until it is smashed
+    LUNGE = .09         # its last lunge in, smashed as it lands
+
+    def close_rel(self, k, t):
+        d = self.after[k]
+        rel0 = self.rel_before_launch(k, d["L"] - 1e-4)
+        ang0 = math.atan2(rel0[1], rel0[0])
+        a = max(0.0, t - (d["L"] + self.DASH))
+        span = max(.1, d["S"] - self.LUNGE - d["L"] - self.DASH)
+        r = self.R_CLOSE - 12 * smooth(a / span)            # creeping closer while it waits
+        th = ang0 + .45 * math.sin(a * 2.6 + k) * min(1.0, a / .3)
+        w = 1.0 + 1.5 * smooth(a / span)
+        return np.array([math.cos(th) * r + w * math.sin(t * 53 + k), math.sin(th) * r * .9 + w * math.cos(t * 47 + k)])
+
     def pos_after(self, k, t):
-        """A cut drop: one more turn round the soul with the ring, out to its spot
-        on the arc, then (from its launch) flying at the soul, faster and faster -
-        smashed before it gets there."""
+        """A cut drop: one more turn round the soul with the ring, out to its spot on
+        the arc; from its launch (on the notes) it recoils and runs in at the soul
+        (eased), and stays close, swaying, creeping in; on its confirmed bar it
+        lunges the last bit and is smashed."""
         d = self.after[k]
         S = np.asarray(self.target(t), float)
         if t < d["L"]:
             return S + self.rel_before_launch(k, t)
-        rel = self.rel_before_launch(k, d["L"] - 1e-4)
-        u = clamp((t - d["L"]) / max(.03, d["S"] - d["L"]))
-        e = u * u * (3 - 2 * u) * .7 + u ** 2 * .3         # off from the recoil slowly, fast, easing in at the end
-        return S + rel * (1 - .82 * e)
+        if t < d["L"] + self.DASH:
+            rel0 = self.rel_before_launch(k, d["L"] - 1e-4)
+            u = (t - d["L"]) / self.DASH
+            e = u * u * (3 - 2 * u) * .7 + u ** 2 * .3     # off slowly, fast, easing in
+            return S + rel0 + (self.close_rel(k, d["L"] + self.DASH) - rel0) * e
+        if t < d["S"] - self.LUNGE:
+            return S + self.close_rel(k, t)
+        c0 = self.close_rel(k, d["S"] - self.LUNGE)
+        u = clamp((t - (d["S"] - self.LUNGE)) / self.LUNGE)
+        return S + c0 * (1 - .7 * u * u)
 
     def draw_after(self, c, t, k):
         d = self.after[k]
@@ -3909,7 +3930,7 @@ class HuntingInk(Attack):
             return
         x, y = self.pos_after(k, t)
         a = t - d["tc"]
-        flying = t >= d["L"]
+        flying = d["L"] <= t < d["L"] + self.DASH or t >= d["S"] - self.LUNGE
         # velocity (for the stretch and the trail)
         px, py = self.pos_after(k, max(d["tc"], t - 1 / 120))
         vx, vy = (x - px) * 120, (y - py) * 120

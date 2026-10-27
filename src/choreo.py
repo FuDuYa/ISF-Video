@@ -90,7 +90,7 @@ SETTLE = (PRESS_T + .22, .45)                   # (start, duration) of easing ba
 
 AIM_OPEN = tm(29.5)                             # FIGHT pressed again: the aim meter
 CONFIRMS = [tm(m) for m in (29.625, 29.75, 29.875, 30.125, 30.25, 30.375, 30.5, 30.75)]
-LAUNCH = [t - .24 for t in CONFIRMS]           # each drop: a recoil, then an eased run at the soul - smashed as it arrives
+LAUNCH = [tm(m) for m in (28.75, 28.875, 29, 29.125, 29.25, 29.375, 29.5, 29.5625)]   # on the notes: each drop runs in at the soul
 CURTAIN_START = PRESS_T                         # the black over the paper is a curtain of ink from here on
 REVEAL = tm(32.75)                              # the last piece is gone as the 5-4-5-4 sixteenths begin: Ink Sans is there
 CURTAIN_CUTS = sorted({round(n.t, 4) for n in parse_chart(ROOT / "maidata.txt", OFFSET)[0]
@@ -165,46 +165,55 @@ RISE = (tm(33), tm(33.8))
 ARRIVE = tm(34)
 NEW_END = tm(48)
 LOCAL = False                                   # plan.py: everything in the arena's own frame
-FULL, HALF_W = 640, 300                         # the band's widths: the whole screen / half of it
-_DX0, _DY0 = 0, 80                              # at first the band lies lower: the soul (on FIGHT) is on it
+FULL, HALF_W, TALL = 640, 300, 360              # the canvas: the whole width / half of it; most of the height
+CY = 32                                         # (on screen it sits this much lower than its frame: centred)
+_DX0, _DY0 = 0, 80                              # at first it lies lower: the soul (on FIGHT) is on it
 SOUL_RESETS = [(SINK0, (47, 453 - _DY0))]       # (plan.py: from here the soul is in the arena's frame)
+TRANSFORMS = []                                 # (t, how hard): the canvas changes shape / side - cinema kicks
 
 
 def _arena_keys():
     s16, b = MEAS / 16, lambda m: tm(m)
     K = []                                       # (t, dx, dy, w, h, dur, ease)
     for j in range(4):                           # the sheet drops a little on each sixteenth
-        K.append((SINK0 + j * s16, _DX0, _DY0 + 3 * (j + 1), FULL, 150, .05, "out"))
-    K.append((b(33), 0, 0, FULL, 150, ARRIVE - b(33) - .02, "smooth"))  # carried up into the band
-    K.append((ARRIVE, 0, 6, FULL, 138, .05, "out"))                     # lands
-    K.append((ARRIVE + .07, 0, 0, FULL, 150, .22, "out"))
-    for m in (34.125, 34.25, 34.375):                                   # it flexes on the three pairs
-        K.append((b(m), 0, 0, FULL, 134, .05, "out"))
-        K.append((b(m) + .06, 0, 0, FULL, 150, .08, "out"))
-    H2 = (FULL - HALF_W) // 2 - 10                                      # how far a half sits off the middle
-    K += [(b(35), H2, 0, HALF_W, 150, .35, "smooth"),                   # it shrinks into the right half
-          (b(35.5), -H2, 0, HALF_W, 150, .35, "smooth"),                # ...goes over to the left half
-          (b(36), H2, 0, HALF_W, 150, .35, "smooth"),
-          (b(36.5), 0, 0, HALF_W, 150, .3, "smooth"),
-          (b(37), H2, 0, HALF_W, 150, .4, "smooth"),
-          (b(38), -H2, 0, HALF_W, 150, .4, "smooth"),
-          (b(38.875), 0, 0, FULL, 130, .1, "out")]                      # the break: the whole width again
+        K.append((SINK0 + j * s16, _DX0, _DY0 + 3 * (j + 1), FULL, TALL, .05, "out"))
+    K.append((b(33), 0, CY, FULL, TALL, ARRIVE - b(33) - .02, "smooth"))   # it spreads over most of the screen
+    K.append((ARRIVE, 0, CY + 8, FULL, TALL - 18, .05, "out"))            # lands
+    K.append((ARRIVE + .07, 0, CY, FULL, TALL, .22, "out"))
+    for m in (34.125, 34.25, 34.375):                                     # it flexes on the three pairs
+        K.append((b(m), 0, CY, FULL - 24, TALL - 20, .04, "out"))
+        K.append((b(m) + .05, 0, CY, FULL, TALL, .1, "out"))
+    H2 = (FULL - HALF_W) // 2 - 10                                        # how far a half sits off the middle
+    snap = .2                                                             # (a change of side or shape: fast)
+
+    def go(t, dx, w, h=TALL, hard=1.0):
+        K.append((t, dx, CY, w, h, snap, "out"))
+        TRANSFORMS.append((t, hard))
+
+    go(b(35), H2, HALF_W, hard=1.4)                                       # it slams into the right half
+    go(b(35.5), -H2, HALF_W)                                              # ...across to the left half
+    go(b(36), H2, HALF_W)
+    go(b(36.5), 0, HALF_W, hard=.6)
+    go(b(37), H2, HALF_W)
+    go(b(38), -H2, HALF_W)
+    go(b(38.875), 0, FULL, TALL - 30, hard=1.6)                           # the break: the whole width again
     side = -1
-    for m in (39, 40, 41):                                              # bar by bar, from side to side
-        K.append((b(m), H2 * side, 0, HALF_W, 150, .35, "smooth"))
-        K.append((b(m + .5), H2 * side, 0, HALF_W - 20, 140, .06, "out"))   # (it flexes on the pairs)
-        K.append((b(m + .5) + .08, H2 * side, 0, HALF_W, 150, .12, "out"))
+    for m in (39, 40, 41):                                                # bar by bar, from side to side
+        go(b(m), H2 * side, HALF_W)
+        K.append((b(m + .5), H2 * side, CY, HALF_W - 24, TALL - 24, .05, "out"))   # (it flexes on the pairs)
+        K.append((b(m + .5) + .07, H2 * side, CY, HALF_W, TALL, .12, "out"))
         side = -side
-    K += [(b(42), 0, 0, FULL, 150, .35, "smooth")]
+    go(b(42), 0, FULL, hard=1.3)
     side = 1
     for m in (43, 44, 45):
-        K.append((b(m), H2 * side, 0, HALF_W, 150, .35, "smooth"))
-        K.append((b(m + .5), H2 * side, 0, HALF_W - 20, 140, .06, "out"))
-        K.append((b(m + .5) + .08, H2 * side, 0, HALF_W, 150, .12, "out"))
+        go(b(m), H2 * side, HALF_W)
+        K.append((b(m + .5), H2 * side, CY, HALF_W - 24, TALL - 24, .05, "out"))
+        K.append((b(m + .5) + .07, H2 * side, CY, HALF_W, TALL, .12, "out"))
         side = -side
-    K += [(b(45.875), 0, 0, FULL, 150, .4, "smooth"),                   # the long slide: the whole width
-          (b(47), 0, 0, FULL, 134, .06, "out"),                         # the break
-          (b(47) + .08, 0, 0, FULL, 150, .25, "out")]
+    go(b(45.875), 0, FULL, hard=1.2)                                      # the long slide: the whole width
+    K += [(b(47), 0, CY, FULL - 40, TALL - 40, .05, "out"),               # the break
+          (b(47) + .07, 0, CY, FULL, TALL, .25, "out")]
+    TRANSFORMS.append((b(47), 1.6))
     return K
 
 
@@ -220,7 +229,7 @@ def _ease(kind, u):
 
 def arena_state(t):
     """(dx, dy, w, h) of the arena at t: its offset on screen and its size."""
-    st = [_DX0, _DY0, float(FULL), 150.0]
+    st = [_DX0, _DY0, float(FULL), float(TALL)]
     for tk, dx, dy, w, h, dur, ease in ARENA_KEYS:
         if t < tk:
             break
@@ -1110,7 +1119,7 @@ def add_sink(tl: Timeline, notes):
         ux, uy = abs(u[0]) + 1e-9, abs(u[1]) + 1e-9
         return min(g.iw / 2 / ux, g.ih / 2 / uy)
 
-    def dart(t, key, aim, speed=560.0, length=30):
+    def dart(t, key, aim, speed=640.0, length=44):
         g = geo(t)
         u = np.array(key_vec(key), float)
         start = np.array([g.cx, g.cy]) + u * (math.hypot(g.iw, g.ih) / 2 + 50)
@@ -1167,13 +1176,13 @@ def add_sink(tl: Timeline, notes):
             if n.kind == "hold":                        # a beam poured in along the key's direction
                 u = np.array(key_vec(n.key), float)
                 origin = ctr + u * (edge_dist(g, u) + 34)
-                atts.append(A.Beam(tuple(origin), tuple(-u), t, t + max(n.dur, .15), width=20, tele=.42,
+                atts.append(A.Beam(tuple(origin), tuple(-u), t, t + max(n.dur, .15), width=30, tele=.42,
                                    seed=int(rng.integers(1_000_000))))
                 continue
             # a tap: a bone from its key's side
             if gap < .06:                               # twenty-fourths: a fan through the middle
                 aim = ctr + rng.uniform(-10, 10, 2)
-                dart(t, n.key, aim, speed=620)
+                dart(t, n.key, aim, speed=700)
             elif gap < .08 and len(grp) == 1:           # sixteenth runs: every other one at the soul
                 k = int(round((t - OFFSET) / s16))
                 aim = aim_at(t - .35, g) if k % 2 == 0 else ctr + rng.uniform(-14, 14, 2)

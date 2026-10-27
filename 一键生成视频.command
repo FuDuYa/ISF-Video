@@ -4,7 +4,7 @@
 # 它会依次：
 #   1. 拉取 GitHub 上的最新代码（只快进；你本地没提交的改动不会被覆盖，拉不下来就用本地代码继续）
 #   2. 第一次运行时自动建好 Python 环境（.venv）；requirements.txt 变了会自动补装
-#   3. 代码、谱面、贴图有变化（或者还没规划过）就先跑走位规划 plan.py（约 2 分钟），没变就跳过
+#   3. 代码、谱面、贴图有变化（或者还没规划过）就先跑走位规划 plan.py（约 3 分钟），没变就跳过
 #   4. 渲染 output/preview-<开始>-<结束>s-<年月日-时分秒>.mp4（每次一个新文件，不覆盖旧的），完成后自动打开
 #
 # 时间范围（秒）：命令后面的两个参数 > render_range.txt 里的“开始 结束” > 默认 0 33.85
@@ -73,7 +73,7 @@ EOF
 if [ -f output/plan.npz ] && [ -f output/aim.npy ] && [ "$(cat output/plan.sig 2>/dev/null)" = "$SIG" ]; then
   echo "== 走位规划：代码没变，沿用上次的结果 =="
 else
-  echo "== 走位规划（约 2 分钟）=="
+  echo "== 走位规划（约 3 分钟）=="
   rm -f output/plan.sig
   .venv/bin/python src/plan.py || fail "走位规划失败"
   echo "$SIG" > output/plan.sig
