@@ -120,6 +120,9 @@ def draw_sans(frame: np.ndarray, t: float, tl, gain: float = 1.0, head=None, bod
     h, b = sans_pose(t, tl)
     head, body = head or h, body or b
     ox, oy = INK["origin"]
+    oy -= int(round(C.rise(t)))               # (the descent: he rises away as we sink)
+    if oy < -260:
+        return
     _, by, hy = sans_offsets(t)
     lyy = 0
     act = actions.pose(t)
@@ -277,6 +280,8 @@ def paper_mask(t: float, box, grid=None):
     sheet that still wraps the buttons (C.REST_RECT). `grid`: (XX, YY, EDGE) for
     a bigger plane than the screen (scene.overscan)."""
     XX, YY, EDGE = grid if grid is not None else (_XX, _YY, _EDGE)
+    if C.SINK0 <= t < C.NEW_END:
+        return sink_paper(t, box, XX, YY, EDGE)
     x, y, w, h = box
     big = (-150, -150, W + 150, H + 150)
     if t < RETRACT[0]:
@@ -320,6 +325,38 @@ def edge_push(t):
             amp += a0 * (math.sin(a / .05 * math.pi / 2) if a < .05
                          else math.exp(-(a - .05) * 9) * math.cos((a - .05) * 26))
     return max(0.0, amp)
+
+
+def sink_paper(t, box, XX, YY, EDGE):
+    """The descent: the torn-out piece (the arena, moving) and - until it has risen
+    away - the rest of the sheet with a hole where the piece was. The tear runs
+    round the piece one side a note on the 5-4-5-4 sixteenths (a dark wet line)."""
+    x, y, w, h = box
+    d = np.maximum(np.maximum(x - XX, XX - (x + w)), np.maximum(y - YY, YY - (y + h)))
+    piece = d - EDGE * 4 < 0
+    edge = (d - EDGE * 4 > -2.5) & piece                  # its torn edge, wet and dark (seen over the sheet too)
+    up = C.rise(t)
+    if up > H + 300:
+        return piece, (edge if t < C.ARRIVE + .4 else None)
+    x0, y0, x1, y1 = C.REST_RECT
+    sheet = (XX >= x0) & (XX < x1) & (YY >= y0 - up) & (YY < y1 - up)
+    hx, hy, hw, hh = C.arena_box(C.SINK0)                 # where the piece was cut out of the sheet
+    hy -= up
+    dh = np.maximum(np.maximum(hx - XX, XX - (hx + hw)), np.maximum(hy - YY, YY - (hy + hh)))
+    hole = dh - EDGE * 4 < 1
+    s16 = C.MEAS / 16
+    k = (t - C.SINK0) / s16                               # how much of the tear is done (sides)
+    rim = None
+    if t < C.RISE[0]:
+        band = (dh - EDGE * 4 > -2) & (dh - EDGE * 4 < 2)
+        sides = [YY < hy + hh * .25, XX > hx + hw * .75, YY > hy + hh * .75, XX < hx + hw * .25]
+        cut = np.zeros_like(band)
+        for j in range(4):
+            if k >= j:
+                cut |= sides[j]
+        rim = band & cut
+        return piece | sheet, rim                         # (still in one piece: only the tear shows)
+    return piece | (sheet & ~hole), edge
 
 
 def compose_canvas(frame, t, tl, box, ctx, under_top=None):
@@ -374,10 +411,18 @@ def compose(t: float, tl, soul_xy, hp: int, soul_visible: bool = True) -> np.nda
     def paper_hud(fr, pm):
         """When the canvas wraps the buttons the HUD is painted on the paper, under
         whatever is drawn over the canvas."""
-        if not pm[HUD_TOP_ROW:].any():
+        sinking = C.SINK0 <= t < C.NEW_END
+        if not sinking and not pm[HUD_TOP_ROW:].any():
             return False
         hud = np.zeros_like(fr)
         draw_hud(hud, hp, selected=sel)
+        if sinking:                                       # it rises away with the rest of the sheet
+            up = int(round(C.rise(t)))
+            if up >= H:
+                hud[:] = 0
+            elif up:
+                hud = np.roll(hud, -up, axis=0)
+                hud[H - up:] = 0
         hm = hud > 0
         on = hm & pm
         fr[hm & ~pm] = hud[hm & ~pm]

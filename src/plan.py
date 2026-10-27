@@ -119,7 +119,10 @@ def forward(safe, surv, valid, start):
         return (int(min(max(q[0], xs[0]), xs[-1])), int(min(max(q[1], ys[0]), ys[-1])))
 
     forced = {int(round(t * FPS)) - f0: dmg for t, dmg in getattr(C, "FORCED_HITS", [])}
+    resets = {int(round(t * FPS)) - f0: q for t, q in getattr(C, "SOUL_RESETS", [])}
     for i in range(n):
+        if i in resets:                      # the soul's frame changes (the descent): it is here in the new one
+            p = (resets[i][0] - X0, resets[i][1] - Y0)
         pos[i] = (p[0] + X0, p[1] + Y0)
         if i in forced:                      # a scripted hit (the story makes it land)
             cur_hp = max(1, cur_hp - forced[i])
@@ -232,6 +235,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default=str(ROOT / "output" / "plan.npz"))
     args = ap.parse_args()
+    C.LOCAL = True      # (the descent: plan in the moving arena's own frame - render moves it with the arena)
     f0, _ = frame_range()
     # pass 1: attacks aim at the arena centre; pass 2: they aim where the soul was
     C.AIM = None

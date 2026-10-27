@@ -3633,6 +3633,95 @@ class InkShieldStrikes(Attack):
         c.sprites.extend(slashes)                             # ...and the blade stopped on it, over it
 
 
+class ArenaFrame(Attack):
+    """Attacks that live on the moving arena of the descent (choreo.add_sink): they
+    are made in the arena's own frame and drawn moved with it (choreo.arena_offset;
+    the planner sees the arena standing still)."""
+
+    def __init__(self, attacks, offset):
+        self.attacks = sorted(attacks, key=lambda a: (getattr(a, "z", 0), a.t0))
+        self.offset = offset
+        self.t0 = min(a.t0 for a in self.attacks)
+        self.t1 = max(a.t1 for a in self.attacks)
+        self.impact = None
+
+    def draw(self, c):
+        t = c.t
+        ox, oy = self.offset(t)
+        c.ox, c.oy = ox, oy
+        n0 = len(c.sprites)
+        try:
+            for a in self.attacks:
+                if a.t0 <= t <= a.t1:
+                    a.draw(c)
+        finally:
+            c.ox = c.oy = 0.0
+        if ox or oy:
+            for i in range(n0, len(c.sprites)):
+                spr, x, y, g, m = c.sprites[i]
+                c.sprites[i] = (spr, x + ox, y + oy, g, m)
+
+
+class Piston(Attack):
+    """A bone that stabs in from outside the arena along one fixed lane (a key's
+    direction, towards the middle), again and again: the lane is marked first - a
+    pale dashed line that darkens as the first stab comes - and every stab shoots
+    in, holds for a moment and pulls back out. White outside the paper, ink on it."""
+
+    def __init__(self, center, direction, hits, reach_from, reach_to, warn=.38, seed=0):
+        self.C = np.asarray(center, float)
+        d = np.asarray(direction, float)
+        self.d = d / np.linalg.norm(d)                    # pointing into the arena
+        self.hits = sorted(hits)
+        self.r0, self.r1 = reach_from, reach_to            # distance from the middle: the tip at rest / at full stab
+        self.warn = warn
+        self.t0, self.t1 = self.hits[0] - warn, self.hits[-1] + .3
+        self.impact = None
+
+    IN, HOLD, OUT = .035, .045, .09
+
+    def tip(self, t):
+        """How far in the tip is (distance from the middle), or None when it is out."""
+        best = None
+        for th in self.hits:
+            a = t - (th - self.IN)
+            if a < 0 or a > self.IN + self.HOLD + self.OUT:
+                continue
+            if a < self.IN:
+                u = out_cubic(a / self.IN)
+            elif a < self.IN + self.HOLD:
+                u = 1.0
+            else:
+                u = 1 - smooth((a - self.IN - self.HOLD) / self.OUT)
+            r = self.r0 + (self.r1 - self.r0) * u
+            best = r if best is None else min(best, r)
+        return best
+
+    def draw(self, c):
+        t = c.t
+        out = self.C - self.d * (self.r0 + 60)              # back, outside the arena
+        lane_end = self.C - self.d * self.r1
+        g = smooth((t - self.t0) / .12) * (1 - smooth((t - self.hits[-1] - .1) / .2))
+        if g > 0:                                          # the lane, marked
+            first = t < self.hits[0] - self.IN
+            val = int((64 if first and t < self.hits[0] - .14 else 92) * g)
+            n = 10
+            for k in range(n):
+                if k % 2:
+                    continue
+                a_ = self.C - self.d * (self.r0 - (self.r0 - self.r1) * k / n)
+                b_ = self.C - self.d * (self.r0 - (self.r0 - self.r1) * (k + 1) / n)
+                c.line("art", [a_, b_], 6, val)
+        r = self.tip(t)
+        if r is None:
+            return
+        tip = self.C - self.d * r
+        put_bone_line(c, out, tip, thick=10)
+        a = min((abs(t - th) for th in self.hits))
+        if a < .06:                                        # the stab lands: a small splash at the tip
+            c.circle("art", tip[0], tip[1], 10 + 30 * a / .06, fade_gray(110, 1 - a / .06))
+
+
 class HuntingInk(Attack):
     """The ring of ink the cube bursts into does not dry. The drops are thrown far
     out, stop, tremble - and then, as if they had come alive, fall in around the

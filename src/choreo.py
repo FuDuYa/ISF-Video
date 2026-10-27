@@ -74,7 +74,7 @@ WALK_SPEED = max(abs(KNOCK_TO[0] - FIGHT_SOUL[0]), abs(KNOCK_TO[1] - FIGHT_SOUL[
 WALK_ARRIVE = (int(round(WALK_T * 60)) + _WALK_STEPS) / 60
 SOUL_SCRIPT_REST = [dict(kind="fly", t0=tm(24.75), dur=KNOCK_DUR, to=KNOCK_TO, hold=WALK_T),
                     dict(kind="walk", t0=WALK_T, to=FIGHT_SOUL, hold=PRESS_T + .22, speed=WALK_SPEED),
-                    dict(kind="fly", t0=PRESS_T + .22, dur=.55, to=MENU_SOUL, hold=tm(34), ease="smooth")]
+                    dict(kind="fly", t0=PRESS_T + .22, dur=.55, to=MENU_SOUL, hold=tm(32.75), ease="smooth")]
 SOUL_SCRIPT = list(SOUL_SCRIPT_REST)      # (build() puts the dodge out of the paper box in front)
 CLOSE_IN = [tm(25.75 + k / 4) for k in range(9)]   # the ring lunges in on every beat up to the press
 # after the cut (M28-M33.5): the cut ring is not destroyed - every drop cracks and
@@ -85,7 +85,7 @@ CLOSE_IN = [tm(25.75 + k / 4) for k in range(9)]   # the ring lunges in on every
 # piece by piece it comes off - it was a curtain of black ink, and on the M33
 # downbeat the rest falls: Ink Sans was hiding behind it all along (he stands
 # there through M33; the old placeholder takes over from M34)
-SECTION_END = tm(34)                            # (he stands there, revealed, through M33)
+SECTION_END = tm(48)                            # the canvas lasts through the descent (M32.75-M48)
 SETTLE = (PRESS_T + .22, .45)                   # (start, duration) of easing back onto it
 
 AIM_OPEN = tm(29.5)                             # FIGHT pressed again: the aim meter
@@ -97,7 +97,7 @@ CURTAIN_CUTS = sorted({round(n.t, 4) for n in parse_chart(ROOT / "maidata.txt", 
                        if tm(31) - 1e-3 <= n.t < REVEAL - 1e-3})   # every note of M31-M32.6875: one more bar
 CURTAIN_PIECE_CUTS = CURTAIN_CUTS[:-1]          # ...each cuts away a piece of the ink over him;
 PARRY_T = CURTAIN_CUTS[-1]                      # the last one is blocked by his brush, blinking in
-FIGHT_SELECT = (WALK_ARRIVE, SECTION_END)
+FIGHT_SELECT = (WALK_ARRIVE, tm(33.75))        # (the buttons rise away with the sheet in M33)
 PRESSES = [PRESS_T, AIM_OPEN]                   # the cut (its edge just touched), then FIGHT for the aim meter
 # Ink Sans is gone while the camera is right inside the canvas (out of shot) - when
 # it pulls back he is not there; he is back while it is pushed in on the FIGHT cut
@@ -148,6 +148,109 @@ def paper_offset(t):
 A.PAPER_OFFSET = paper_offset
 
 
+# --------------------------------------------------------------------- the descent
+# M32.75-M48. On the 5-4-5-4 sixteenths the piece of paper under the soul (it is
+# on the FIGHT button) is torn out of the sheet, one side a note, sinking a little
+# each time. Through M33 the rest of the sheet - the buttons, the status bar -
+# and Ink Sans rise away (we are sinking: the stars stream up), while the piece
+# carries the soul to the middle and grows into the new arena; it lands on M34.
+# From then on it slides left and right and changes shape with the phrases while
+# attacks come in from all round it (add_sink). Everything that happens on it is
+# worked out in its own frame (the planner sees it standing still: LOCAL), and
+# moved with it on screen (attacks.ArenaFrame, render.soul_at, scene.paper_mask).
+SINK0 = tm(32.75)
+RISE = (tm(33), tm(33.8))
+ARRIVE = tm(34)
+NEW_END = tm(48)
+LOCAL = False                                   # plan.py: everything in the arena's own frame
+PIECE = (100, 64)
+SOUL_LOCAL0 = (320, BOX_BOTTOM - PIECE[1] // 2) # where the soul sits on the piece
+_DX0, _DY0 = 47 - SOUL_LOCAL0[0], 453 - SOUL_LOCAL0[1]   # the piece starts round the soul on FIGHT
+SOUL_RESETS = [(SINK0, SOUL_LOCAL0)]            # (plan.py: from here the soul is in the arena's frame)
+
+
+def _arena_keys():
+    s16, b = MEAS / 16, lambda m: tm(m)
+    K = []                                       # (t, dx, dy, w, h, dur, ease)
+    for j in range(4):                           # torn out, a side a note, sinking a little each time
+        K.append((SINK0 + j * s16, _DX0, _DY0 + 3 * (j + 1), PIECE[0], PIECE[1], .05, "out"))
+    K.append((b(33), 0, 0, 220, 150, ARRIVE - b(33) - .02, "smooth"))   # carried to the middle, growing
+    K.append((ARRIVE, 0, 7, 240, 138, .05, "out"))                      # lands
+    K.append((ARRIVE + .07, 0, 0, 220, 150, .22, "out"))
+    for k, m in enumerate((34.125, 34.25, 34.375)):                     # three strides left on the pairs
+        K.append((b(m), -40 * (k + 1), 0, 220, 150, .08, "out"))
+    K += [(b(35), 120, 0, 270, 120, .45, "smooth"),                     # glides across, going wide
+          (b(35.5), -60, 0, 170, 150, .4, "smooth"),                    # ...back, going tall
+          (b(36), 70, 0, 240, 140, .4, "smooth"),
+          (b(36.5), 0, 0, 220, 150, .3, "smooth"),
+          (b(37), 100, 0, 220, 150, .5, "smooth"),
+          (b(38), -100, 0, 220, 150, .5, "smooth"),
+          (b(38.875), 0, 0, 300, 120, .1, "out")]                       # the break: it snaps wide
+    side = -1
+    for m in (39, 40, 41):                                              # bar by bar, from side to side
+        K.append((b(m), 100 * side, 0, 300, 120, .35, "smooth"))
+        K.append((b(m + .5), 100 * side, 0, 270, 140, .12, "out"))      # (it flexes on the pairs)
+        side = -side
+    K += [(b(42), 0, 0, 220, 150, .35, "smooth")]
+    side = 1
+    for m in (43, 44, 45):
+        K.append((b(m), 100 * side, 0, 300, 120, .35, "smooth"))
+        K.append((b(m + .5), 100 * side, 0, 270, 140, .12, "out"))
+        side = -side
+    K += [(b(45.875), 0, 0, 180, 150, .4, "smooth"),                    # the long slide: back to the middle
+          (b(47), 0, 0, 240, 150, .08, "out"),                          # the break
+          (b(47) + .1, 0, 0, 220, 150, .3, "out")]
+    return K
+
+
+ARENA_KEYS = _arena_keys()
+
+
+def _ease(kind, u):
+    u = clamp(u)
+    if kind == "out":
+        return 1 - (1 - u) ** 3
+    return u * u * (3 - 2 * u)
+
+
+def arena_state(t):
+    """(dx, dy, w, h) of the arena at t: its offset on screen and its size."""
+    st = [_DX0, _DY0, float(PIECE[0]), float(PIECE[1])]
+    for tk, dx, dy, w, h, dur, ease in ARENA_KEYS:
+        if t < tk:
+            break
+        e = _ease(ease, (t - tk) / dur)
+        st = [a + (b_ - a) * e for a, b_ in zip(st, (dx, dy, w, h))]
+    return tuple(st)
+
+
+def arena_offset(t):
+    """How far (dx, dy) the arena - and everything on it - is moved on screen."""
+    if LOCAL or not (SINK0 <= t < NEW_END):
+        return 0, 0
+    dx, dy, _, _ = arena_state(t)
+    return int(round(dx)), int(round(dy))
+
+
+def arena_size(t):
+    _, _, w, h = arena_state(t)
+    return int(round(w / 2)) * 2, int(round(h / 2)) * 2
+
+
+def arena_box(t):
+    x, y, w, h = box_rect(arena_size(t))
+    ox, oy = arena_offset(t)
+    return x + ox, y + oy, w, h
+
+
+def rise(t):
+    """How far the rest of the sheet, the buttons and Ink Sans have risen (px)."""
+    if t < RISE[0]:
+        return 0.0
+    u = clamp((t - RISE[0]) / (RISE[1] - RISE[0]))
+    return 560.0 * u ** 1.8
+
+
 # --------------------------------------------------------------------- sections
 # m: first measure; box: outer (w, h); tap/hold: styles; head: Ink Sans head
 SECTIONS = [
@@ -184,11 +287,11 @@ SECTIONS = [
     # (placeholder until the next part is directed: no attacks yet)
     dict(m=28, box=(200, 150), tap="none", hold="none", slide="none", head="head_black_eyes.png",
          body="body.png"),
+    # the descent (M32.75-M48): the arena is a torn-out piece of the sheet, carried
+    # down to a new place and sliding left and right under fire (add_sink)
+    dict(m=32.75, box=(220, 150), tap="custom", hold="custom", slide="custom", head="head_black_eyes.png",
+         body="body.png"),
     # (old placeholder from here on, until the next part is directed)
-    dict(m=34, box=(150, 150), tap="spike", hold="beam", head="head_black.png"),
-    dict(m=39, box=(300, 130), tap="bone", hold="hbeam", head="head_black_eyes.png"),
-    dict(m=42, box=(260, 140), tap="dart", hold="hbeam", head="head_black_eyes.png"),
-    dict(m=46, box=(160, 150), tap="drip", hold="beam", head="head_black_eyes.png"),
     dict(m=48, box=(150, 150), tap="slowdrip", hold="beam", head="head_close_eyes.png"),
     dict(m=54, box=(190, 150), tap="spike", hold="beam", head="head_normal.png"),
     dict(m=55, box=(190, 150), tap="spike", hold="beam", head="head_black_eyes.png"),
@@ -232,7 +335,10 @@ TRANS_STARTS = [_trans(s)[0] for s in SECTIONS]
 
 def box_at(t: float) -> tuple[int, int, int, int]:
     """Arena rectangle; each section eases into its size (default: the
-    BOX_TRANSITION before it starts; sections may set their own lead/dur)."""
+    BOX_TRANSITION before it starts; sections may set their own lead/dur).
+    During the descent it is the moving piece of paper (arena_box)."""
+    if SINK0 <= t < NEW_END:
+        return arena_box(t)
     i = max(0, bisect.bisect_right(TRANS_STARTS, t) - 1)
     cur = SECTIONS[i]
     prev = SECTIONS[i - 1] if i > 0 else cur
@@ -497,6 +603,7 @@ def build(chart_path: Path | None = None) -> Timeline:
         add_tap(tl, n, sec, g, nxt)
     add_specials(tl, nxt, notes)
     add_battle(tl, nxt, notes)
+    add_sink(tl, notes)
     tl.finalize()
     return tl
 
@@ -968,3 +1075,108 @@ def add_rest(tl: Timeline, nxt):
         tl.extra_impacts.append((t, 6.0 if t == PRESS_T else 3.0))
     for t in CONFIRMS:                                  # each confirmed bar smashes a drop
         tl.extra_impacts.append((t, 2.5))
+
+
+# --------------------------------------------------------------------- the descent's attacks
+def add_sink(tl: Timeline, notes):
+    """M34-M47: attacks on the moving arena, all made in its own frame and moved
+    with it on screen (attacks.ArenaFrame). They come in from all round it - from
+    each note's key on the maimai ring - and turn to ink as they cross onto the
+    paper:
+      - single taps: a bone at the soul from the key's side; pairs: two at once;
+      - sixteenth runs round the ring: a bone on every note, every other one at
+        the soul, the rest through the middle;
+      - twenty-fourth bursts: a fan of bones through the middle;
+      - two keys alternating on sixteenths (1-4-1-4...): two pistons stabbing in
+        and out along fixed lanes from those keys (the lanes are marked first);
+      - slides: a brush stroke along the slide (a pale wash first);
+      - holds: a beam of ink poured in from outside along the key's direction;
+      - breaks: the arena snaps into a new shape (flash, shake)."""
+    rng = np.random.default_rng(3434)
+    seg = sorted((n for n in notes if ARRIVE - 1e-3 <= n.t < tm(47.5)), key=lambda n: n.t)
+    s16 = MEAS / 16
+    atts = []
+
+    def geo(t):
+        return Geo(arena_size(t))
+
+    def edge_dist(g, u):
+        """From the middle to the paper's edge along unit vector u."""
+        ux, uy = abs(u[0]) + 1e-9, abs(u[1]) + 1e-9
+        return min(g.iw / 2 / ux, g.ih / 2 / uy)
+
+    def dart(t, key, aim, speed=560.0, length=30):
+        g = geo(t)
+        u = np.array(key_vec(key), float)
+        start = np.array([g.cx, g.cy]) + u * (math.hypot(g.iw, g.ih) / 2 + 50)
+        d = np.asarray(aim, float) - start
+        atts.append(A.BoneShots((g.ix0, g.iy0, g.ix1, g.iy1), [(t, tuple(start), tuple(d))], speed=speed,
+                                length=length, seed=int(rng.integers(1_000_000))))
+
+    # 1. two keys alternating on sixteenths: pistons along fixed lanes
+    used = set()
+    singles = [n for n in seg if n.kind == "tap" and n.group_size == 1 and not n.brk]
+    i = 0
+    while i < len(singles):
+        run = [singles[i]]
+        j = i + 1
+        while j < len(singles) and abs(singles[j].t - run[-1].t - s16) < 2e-3:
+            run.append(singles[j])
+            j += 1
+        keys = sorted({n.key for n in run})
+        if len(run) >= 4 and len(keys) == 2 and all(a.key != b.key for a, b in zip(run, run[1:])):
+            g = geo(run[0].t)
+            for key in keys:
+                u = np.array(key_vec(key), float)
+                atts.append(A.Piston((g.cx, g.cy), -u, [n.t for n in run if n.key == key],
+                                     edge_dist(g, u) + 10, 12.0, seed=int(rng.integers(1_000_000))))
+            used.update(id(n) for n in run)
+            i = j
+        else:
+            i += 1
+
+    # 2. everything else, note by note
+    times = sorted({round(n.t, 4) for n in seg})
+    for ti, t in enumerate(times):
+        grp = [n for n in seg if abs(n.t - t) < 1e-3 and id(n) not in used]
+        if not grp:
+            continue
+        g = geo(t)
+        ctr = np.array([g.cx, g.cy])
+        gap = min([abs(t - u) for u in times if abs(t - u) > 1e-3] or [1.0])
+        for n in grp:
+            if n.brk:                                   # the arena snaps into a new shape
+                tl.flashes.append((t, 34))
+                tl.extra_impacts.append((t, 8.0))
+                atts.append(A.SplashRing(tuple(ctr), t, n=10, speed=170, seed=int(rng.integers(1_000_000)),
+                                         tele=.0, big=True, harmless=True))
+                continue
+            if n.kind == "slide":                       # a brush stroke along the slide
+                for sl in n.slides:
+                    for path in slide_paths(sl.start_key, sl.segments):
+                        pts = [g.ring(x * .85, y * .85) for x, y in path]
+                        atts.append(A.InkStroke(pts, sl.t_start, width=12, lead=max(.42, sl.t_start - sl.t_star),
+                                                sweep=max(.06, sl.duration), linger=.12,
+                                                seed=int(rng.integers(1_000_000))))
+                continue
+            if n.kind == "hold":                        # a beam poured in along the key's direction
+                u = np.array(key_vec(n.key), float)
+                origin = ctr + u * (edge_dist(g, u) + 34)
+                atts.append(A.Beam(tuple(origin), tuple(-u), t, t + max(n.dur, .15), width=20, tele=.42,
+                                   seed=int(rng.integers(1_000_000))))
+                continue
+            # a tap: a bone from its key's side
+            if gap < .06:                               # twenty-fourths: a fan through the middle
+                aim = ctr + rng.uniform(-10, 10, 2)
+                dart(t, n.key, aim, speed=620)
+            elif gap < .08 and len(grp) == 1:           # sixteenth runs: every other one at the soul
+                k = int(round((t - OFFSET) / s16))
+                aim = aim_at(t - .35, g) if k % 2 == 0 else ctr + rng.uniform(-14, 14, 2)
+                dart(t, n.key, aim)
+            else:                                       # eighths, pairs: at the soul
+                off = (np.array(key_vec(n.key)) * 10) if len(grp) > 1 else 0
+                dart(t, n.key, aim_at(t - .35, g) + off)
+        if len(grp) > 1 and not any(n.brk for n in grp):
+            tl.extra_impacts.append((t, 2.0))
+    tl.extra_impacts.append((ARRIVE, 6.0))              # the piece lands
+    tl.attacks.append(A.ArenaFrame(atts, arena_offset))

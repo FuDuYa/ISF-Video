@@ -57,6 +57,12 @@ def _tunnel_push(z0=1.08, n=14):
     return out
 
 
+def _sink_focus(t):
+    """The descent: the camera leans a quarter of the way after the sliding arena."""
+    dx, dy, _, _ = C.arena_state(t)
+    return (320 + .25 * dx, 290 + .2 * dy)
+
+
 KEYS = [
     dict(t=7.0, focus=(320, 240), zoom=1.0, pitch=0, yaw=0, roll=0),
     # the brush paints with the camera held still
@@ -113,6 +119,11 @@ KEYS = [
     dict(t=C.PRESS_T, focus=(170, 430), zoom=1.7, pitch=0, yaw=0, roll=0, ease="in"),
     dict(t=C.PRESS_T + .2, focus=(168, 432), zoom=1.74, pitch=0, yaw=0, roll=0, ease="linear"),
     dict(t=tm(28.5), focus=(320, 240), zoom=1.0, pitch=0, yaw=0, roll=0, ease="smooth"),   # (no jolt as it starts)
+    # the descent: a slight lean down as we sink, then after the arena
+    dict(t=C.RISE[0], focus=(320, 240), zoom=1.0, pitch=0, yaw=0, roll=0),
+    dict(t=C.ARRIVE - .05, focus=(320, 270), zoom=1.05, pitch=-5, yaw=0, roll=0, ease="smooth"),
+    dict(t=C.ARRIVE + .3, focus=lambda t: _sink_focus(t), zoom=1.08, pitch=0, yaw=0, roll=0, ease="out"),
+    dict(t=C.NEW_END - .2, focus=lambda t: _sink_focus(t), zoom=1.08, pitch=0, yaw=0, roll=0, ease="linear"),
 ]
 
 KICKS = [dict(t=CORNERS[4], zoom=.02, decay=14)]
@@ -147,6 +158,9 @@ KICKS.append(dict(t=tm(20.75) + .14, zoom=.05, roll=-3, decay=10))     # the sha
 for n in _notes:
     if tm(17) - 1e-3 <= n.t < tm(24) - 1e-3 and n.group_size > 1:
         KICKS.append(dict(t=n.t, zoom=.022, decay=16))
+for n in _notes:                                     # the descent: pairs kick, so does every piston stab
+    if C.ARRIVE + .05 <= n.t < tm(47) - 1e-3 and n.group_size > 1 and not n.brk:
+        KICKS.append(dict(t=n.t, zoom=.02, roll=.8 * (1 if int(n.t * 100) % 2 else -1), decay=16))
 KICKS.append(dict(t=tm(24.75), zoom=-.12, roll=-3, decay=7))
 
 INVERT = [(t, 1 / 60) for t in SIXTEENTHS] + [(DOWNBEAT, 2 / 60)]
@@ -160,6 +174,12 @@ KICKS.append(dict(t=C.AIM_OPEN, zoom=.04, decay=12))   # FIGHT: the aim meter co
 for t in C.CURTAIN_CUTS:                             # every piece of the ink over him cut away
     KICKS.append(dict(t=t, zoom=.015, roll=.6 * (1 if int(t * 1000) % 2 else -1), decay=18))
 KICKS.append(dict(t=C.REVEAL, zoom=-.05, pitch=-2, decay=8))   # the last of the ink is gone: he is there
+for j in range(4):                                   # the 5-4-5-4: the piece is torn out, a side a note
+    KICKS.append(dict(t=C.SINK0 + j * C.MEAS / 16, zoom=.02, pitch=-2.5, decay=14))
+KICKS.append(dict(t=C.ARRIVE, zoom=.07, pitch=4, decay=9))   # it lands
+for t in (tm(38.875), tm(47)):                       # the breaks: the arena snaps into a new shape
+    KICKS.append(dict(t=t, zoom=-.08, roll=2.5, decay=8))
+    GLITCH.append((t, .06, .9))
 
 # triplet run (M15): every note kicks the camera, every triplet group flashes
 TRIPLETS = _times(15, 16)

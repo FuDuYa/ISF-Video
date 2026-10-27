@@ -56,7 +56,9 @@ def soul_at(i: int):
     plan = _state["plan"]
     f0 = int(plan["f0"])
     k = min(max(i - f0, 0), len(plan["pos"]) - 1)
-    return tuple(plan["pos"][k]), int(plan["hp"][k]), bool(plan["vis"][k])
+    ox, oy = C.arena_offset(i / FPS)                       # (the descent: the soul rides the moving arena)
+    x, y = plan["pos"][k]
+    return (int(x) + ox, int(y) + oy), int(plan["hp"][k]), bool(plan["vis"][k])
 
 
 def frame(i: int) -> np.ndarray:
