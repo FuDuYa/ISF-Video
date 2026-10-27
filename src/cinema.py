@@ -149,14 +149,9 @@ INVERT.append((tm(24.75), 1 / 60))
 for t in C.CONFIRMS:                                 # each confirmed bar smashes a drop
     KICKS.append(dict(t=t, zoom=.03, roll=1.0, decay=16))
 KICKS.append(dict(t=C.AIM_OPEN, zoom=.04, decay=12))   # FIGHT: the aim meter comes up
-for n in _notes:                                     # every piece of the ink curtain cut away
-    if tm(31) - 1e-3 <= n.t < C.REVEAL - 1e-3:
-        KICKS.append(dict(t=n.t, zoom=.02, roll=.8 * (1 if int(n.t * 1000) % 2 else -1), decay=16))
-KICKS.append(dict(t=C.REVEAL, zoom=-.07, pitch=-3, decay=8))   # the curtain falls: he was behind it
-GLITCH.append((C.REVEAL, .07, .9))
-INVERT.append((C.REVEAL, 1 / 60))
-for m in (24.125, 24.25, 24.375):                    # 解: each turn of the shut box starts in a one-frame flash
-    INVERT.append((tm(m), 1 / 60))
+for t in C.CURTAIN_CUTS:                             # every piece of the ink over him cut away
+    KICKS.append(dict(t=t, zoom=.015, roll=.6 * (1 if int(t * 1000) % 2 else -1), decay=18))
+KICKS.append(dict(t=C.REVEAL, zoom=-.05, pitch=-2, decay=8))   # the last of the ink is gone: he is there
 
 # triplet run (M15): every note kicks the camera, every triplet group flashes
 TRIPLETS = _times(15, 16)
@@ -261,8 +256,8 @@ def _dismantle_slices():
         end = box.slash_t - .06                      # all healed before the box is back down for the X
         raw = []
         for key, tc in sorted(box.cuts.items(), key=lambda e: e[1]):
-            p = (box.C[0] + rng.uniform(-90, 90), box.C[1] + rng.uniform(-70, 70))
-            raw.append((tc, p, rng.uniform(0, math.pi), rng.uniform(5, 9) * rng.choice([-1, 1]), .24))
+            p = (box.C[0] + rng.uniform(-60, 60), box.C[1] + rng.uniform(-45, 45))
+            raw.append((tc, p, rng.uniform(0, math.pi), rng.uniform(6, 10) * rng.choice([-1, 1]), .24))
         for tk in box.tumbles:                       # on every turn, a burst of bigger cuts through the middle
             for j in range(4):
                 p = (box.C[0] + rng.uniform(-40, 40), box.C[1] + rng.uniform(-40, 40))
@@ -300,7 +295,9 @@ def apply(frame: np.ndarray, t: float) -> np.ndarray:
         out = fx.ghost(out, 6 if k % 2 else -6, .28 * g)
     sl = _dismantle_slices()
     if sl and C.CUBE is not None and C.CUBE.t_shut <= t < C.CUBE.slash_t:
-        out = fx.dismantle(out, t, sl)
+        bx, by = fx.project_point(p, *C.CUBE.C)              # only round the box (big, but not the whole screen)
+        hud_y = fx.project_point(p, 320, 388)[1]
+        out = fx.dismantle(out, t, sl, (bx, by, 190 * p["zoom"], 150 * p["zoom"], hud_y))
     if CRISIS[0] <= t < CRISIS[1] and SOUL is not None:
         out = _crisis(out, t, p)
     for t0, dur, s in GLITCH:

@@ -1491,8 +1491,9 @@ class FlyingBone:
     """One bone travelling in a straight line from `start` along `d`; enters the
     canvas, then is soaked up when its head reaches the far side."""
 
-    def __init__(self, start, d, speed, t_go, length, inner, seed=0, trail=False):
+    def __init__(self, start, d, speed, t_go, length, inner, seed=0, trail=False, through=False):
         self.trail = trail
+        self.through = through                              # it goes out through the far side (and on, white)
         self.S, self.d = np.asarray(start, float), np.asarray(d, float) / np.linalg.norm(d)
         self.v, self.tg, self.L = speed, t_go, length
         self.inner = inner                                  # ix0, iy0, ix1, iy1
@@ -1501,6 +1502,10 @@ class FlyingBone:
         self.t_in = t_go + (self.s_in - length / 2) / speed      # head crosses into the paper
         self.t_out = t_go + (self.s_out - length / 2) / speed    # head reaches the far side
         self.t_end = self.t_out + length / speed + .6
+        if through:                                         # ...and flies on until it is off the screen
+            sc = _clip_param(self.S, self.d, (-60, -60, 700, 540))
+            self.s_far = (sc[1] if sc else self.s_out) + length
+            self.t_end = max(self.t_end, t_go + self.s_far / speed + .05)
         self.captured_at = None                             # set when a spiral binds it
         rng = np.random.default_rng(seed)
         self.blot = rng.uniform(0, 1, 14)
@@ -1522,7 +1527,10 @@ class FlyingBone:
         s = (t - self.tg) * self.v                          # centre distance along the ray
         head = s + self.L / 2
         tail = s - self.L / 2
-        if head > self.s_out:                               # soaked up at the far side
+        if self.through:                                    # out through the far side, white again past it
+            if tail > self.s_far:
+                head = tail = 0.0
+        elif head > self.s_out:                             # soaked up at the far side
             head = self.s_out
         if head - tail >= 2 * CAP + 2:
             if self.trail:                                  # afterimage: the speed of the run
@@ -1539,11 +1547,16 @@ class FlyingBone:
         # the canvas at once and the bone would seem simply to vanish)
         a = t - (self.t_out - self.L / self.v)               # from the moment its head touches the edge
         if a >= 0:
+            # a small mark of ink where it went out: just enough to give it a feel -
+            # a ragged little blot on the edge and a short smear dragged in after it
             q = self.S + self.d * self.s_out
-            big = 1.5 if self.trail else 1.0
-            c.poly("art", jagged_circle(q[0], q[1], (4 + 8 * out_cubic(min(1, a / .2))) * big, self.blot, n=12),
-                   fade_gray(95, 1 - smooth((a - .15) / .35)))
-            if self.trail and a < .4:                       # it splashes out past the edge as it is drunk
+            g = fade_gray(85, 1 - smooth((a - .2) / .4))
+            r = 2.5 + 2.5 * out_cubic(min(1, a / .12))
+            c.poly("art", jagged_circle(q[0], q[1], r, self.blot, n=10), g)
+            back = q - self.d * (6 + 6 * self.blot[3])
+            c.line("art", [back, q], 2, g)
+            c.circle("art", q[0] - self.d[0] * 9 + self.d[1] * 3, q[1] - self.d[1] * 9 - self.d[0] * 3, 2, g)
+            if self.trail and not self.through and a < .4:  # (a wall: it splashes out past the edge as it is drunk)
                 for j in range(3):
                     r = self.blot[j]
                     v = self.d * (230 + 260 * r) + np.array([0.0, (self.blot[j + 5] - .5) * 300])
@@ -1555,13 +1568,13 @@ class BoneShots(Attack):
     """Single bones thrown in from outside the canvas (no orb), each entering the
     paper on its beat: [(t_enter, start (x, y), direction (dx, dy))]."""
 
-    def __init__(self, inner, shots, speed=620.0, length=30, seed=0, trail=False):
+    def __init__(self, inner, shots, speed=620.0, length=30, seed=0, trail=False, through=False):
         rng = np.random.default_rng(seed)
         self.bones = []
         for t_enter, start, d in shots:
             probe = FlyingBone(start, d, speed, 0.0, length, inner)
             self.bones.append(FlyingBone(start, d, speed, t_enter - probe.t_in, length, inner,
-                                         seed=int(rng.integers(1_000_000)), trail=trail))
+                                         seed=int(rng.integers(1_000_000)), trail=trail, through=through))
         self.t0 = min(b.tg for b in self.bones)
         self.t1 = max(b.t_end for b in self.bones)
         self.impact = None
@@ -3344,16 +3357,18 @@ class FightTarget(Attack):
     """UT's attack meter, painted in ink on the canvas: a wide target eye; one bar
     after another slides in and stops on the centre line on each strike."""
 
-    def __init__(self, center, half_w, half_h, t_paint, strikes, t_end, slide=.42, seed=0):
+    def __init__(self, center, half_w, half_h, t_paint, strikes, t_end, slide=.42, seed=0, slides=None, fade=.45):
         self.C = np.asarray(center, float)
         self.hw, self.hh = half_w, half_h
         self.tp, self.strikes, self.te, self.slide = t_paint, strikes, t_end, slide
-        self.t0, self.t1 = t_paint, t_end + .5
+        self.slides = list(slides) if slides is not None else [slide] * len(strikes)   # (faster bars on the 16ths)
+        self.fade = fade
+        self.t0, self.t1 = t_paint, t_end + fade + .05
         self.impact = None
 
     def draw(self, c):
         t = c.t
-        g = 1 - smooth((t - self.te) / .45)
+        g = 1 - smooth((t - self.te) / self.fade)
         if g <= 0:
             return
         cx, cy = self.C
@@ -3369,13 +3384,14 @@ class FightTarget(Attack):
             c.line("art", [(cx, cy - self.hh - 8), (cx, cy + self.hh + 8)], 3, int(200 * g))
         # the bars: each slides in and stops on the centre on its strike
         for i, ts in enumerate(self.strikes):
-            a = t - (ts - self.slide)
-            if a < 0 or t > ts + .22:
+            sl = self.slides[i]
+            a = t - (ts - sl)
+            if a < 0 or t > ts + .22 or t >= self.te + self.fade:
                 continue
             side = -1 if i % 2 == 0 else 1
-            x = cx + side * self.hw * (1 - out_cubic(clamp(a / self.slide)))
+            x = cx + side * self.hw * (1 - out_cubic(clamp(a / sl)))
             hit = t >= ts
-            val = 255 if not hit else int(255 * (1 - (t - ts) / .22))
+            val = int((255 if not hit else 255 * (1 - (t - ts) / .22)) * g)
             w = 12 if not hit else 12 + 16 * (t - ts) / .22
             c.rect("art", x - w / 2, cy - self.hh - 4, x + w / 2, cy + self.hh + 4, val)
 
@@ -3633,46 +3649,73 @@ class HuntingInk(Attack):
         self.t0, self.t1 = t_burst - tele, t_end + .2
         self.impact = None
         self.overscan = True                              # also drawn past the screen (scene.overscan)
-        # after the cut: each drop cracks and is knocked away - they fan out over
-        # the paper above the soul - hovers, then flies at the soul (launches) and
-        # is smashed by a confirmed bar of the aim meter (confirms)
+        # after the cut: the drops are only nicked - each flinches and cracks, then
+        # the whole ring goes on circling the soul for one more full turn, widening,
+        # and scatters to its spots on an arc over the paper round the FIGHT button;
+        # from there they fly at the soul one by one, trailing ink (launches), each
+        # smashed by a confirmed bar of the aim meter (confirms)
         self.after = None
         if self.cut_c is not None and self.launches:
             ic = [min(len(self.ts) - 1, int((self.cut_t[k] - t_burst) * 120)) for k in range(n)]
             p_cut = np.array([P[ic[k], k] for k in range(n)])
-            rel = p_cut - self.cut_c
-            by_angle = np.argsort(np.arctan2(rel[:, 1], rel[:, 0]))
-            fan = np.radians(np.linspace(-86, -18, n))    # an arc over the paper, round the FIGHT button
-            seq = [3, 4, 2, 5, 1, 6, 0, 7][:n]            # from the middle of the arc outwards
-            self.after = {}
-            for slot, k in enumerate(by_angle):
-                a = fan[slot]
-                R = 245 + 55 * (slot % 2) + 10 * rng.random()
+            rel0 = np.array([p_cut[k] - np.asarray(target(float(self.cut_t[k])), float) for k in range(n)])
+            th0 = np.arctan2(rel0[:, 1] / self.FLAT1, rel0[:, 0])
+            r0 = np.hypot(rel0[:, 0], rel0[:, 1] / self.FLAT1)
+            fan = np.radians(np.linspace(-86, -18, n))     # the arc over the paper, round the FIGHT button
+            slots = []
+            for i, a in enumerate(fan):
+                R = 245 + 55 * (i % 2) + 10 * rng.random()
                 h = self.home + np.array([math.cos(a) * R, math.sin(a) * R * .78])
                 h = np.array([float(np.clip(h[0], 60, 600)), float(np.clip(h[1], 255, 392))])
+                slots.append(h - self.home)                # (relative to where the soul comes to rest)
+            # each drop takes the spot that lies the same way round from the soul as it
+            # does when the turn ends, so they scatter without crossing
+            end_ang = np.arctan2(np.sin(th0), np.cos(th0))
+            slot_ang = np.array([math.atan2(v[1], v[0]) for v in slots])
+            ds, ss = np.argsort(end_ang), np.argsort(slot_ang)
+            wrap = lambda x: (x + math.pi) % math.tau - math.pi
+            best = min(range(n), key=lambda o: sum(abs(wrap(end_ang[ds[i]] - slot_ang[ss[(i + o) % n]]))
+                                                     for i in range(n)))
+            seq = [3, 4, 2, 5, 1, 6, 0, 7][:n]            # launched from the middle of the arc outwards
+            self.after = {}
+            for i in range(n):
+                k, slot = int(ds[i]), int(ss[(i + best) % n])
                 order = seq.index(slot) if slot in seq else slot
                 L = self.launches[min(order, len(self.launches) - 1)]
-                S = self.confirms[min(order, len(self.confirms) - 1)] if self.confirms else t_end
-                self.after[int(k)] = dict(p0=p_cut[k], hover=h, L=L, S=S, tc=float(self.cut_t[k]))
+                S_ = self.confirms[min(order, len(self.confirms) - 1)] if self.confirms else t_end
+                self.after[k] = dict(tc=float(self.cut_t[k]), th0=float(th0[k]), r0=float(r0[k]),
+                                     rel=np.asarray(slots[slot], float), L=L, S=S_)
 
-    BOUNCE = .5         # s to be knocked away after the cut
+    SWIRL = .5          # s for the one more turn round the soul after the cut, widening
+    R_SWIRL = 82.0      # ...out to this radius (the soul is near the corner: keep them on screen)
+    SCATTER = .32       # s to go from the ring to its spot on the arc
 
-    def pos_after(self, k, t):
-        """A cut drop: knocked away along an arc to its spot on the fan, trembling
-        there (more and more as its turn comes), then flying at the soul,
-        faster and faster - smashed before it gets there."""
+    def rel_before_launch(self, k, t):
+        """Where a cut drop is, relative to the soul, before it flies."""
         d = self.after[k]
         a = t - d["tc"]
+        u = clamp(a / self.SWIRL)
+        r = d["r0"] + (self.R_SWIRL - d["r0"]) * out_cubic(u)
+        th = d["th0"] + math.tau * smooth(u)                # one full turn, the way the ring spun
+        ring = np.array([math.cos(th) * r, math.sin(th) * r * self.FLAT1])
+        v = smooth((a - self.SWIRL) / self.SCATTER)
+        rel = ring + (d["rel"] - ring) * v
+        if v >= 1:                                         # waiting: it trembles more as its turn comes
+            w = .8 + 2.2 * smooth((t - (d["L"] - .6)) / .6)
+            rel = rel + np.array([w * math.sin(t * 57 + k), w * math.cos(t * 49 + 2 * k)])
+        return rel
+
+    def pos_after(self, k, t):
+        """A cut drop: one more turn round the soul with the ring, out to its spot
+        on the arc, then (from its launch) flying at the soul, faster and faster -
+        smashed before it gets there."""
+        d = self.after[k]
+        S = np.asarray(self.target(t), float)
         if t < d["L"]:
-            u = out_cubic(clamp(a / self.BOUNCE))
-            p = d["p0"] + (d["hover"] - d["p0"]) * u + np.array([0.0, -38.0 * math.sin(math.pi * u)])
-            if a > self.BOUNCE:
-                w = .8 + 2.2 * smooth((t - (d["L"] - .6)) / .6)
-                p = p + np.array([w * math.sin(t * 57 + k), w * math.cos(t * 49 + 2 * k)])
-            return p
+            return S + self.rel_before_launch(k, t)
+        rel = self.rel_before_launch(k, d["L"])
         u = clamp((t - d["L"]) / max(.05, d["S"] - d["L"]))
-        T = np.asarray(self.target(t), float)
-        return d["hover"] + (T - d["hover"]) * .8 * u ** 1.7
+        return S + rel * (1 - .8 * u ** 1.7)
 
     def draw_after(self, c, t, k):
         d = self.after[k]
@@ -3696,22 +3739,33 @@ class HuntingInk(Attack):
             c.sprites.append((spr, int(x - spr.w / 2), int(y - spr.h / 2), 1.0, None))
             return
         x, y = self.pos_after(k, t)
-        px, py = self.pos_after(k, max(d["tc"], t - .035))
-        flying = t >= d["L"]
-        size = 24.0 * (1 + (.25 * (1 - (t - d["L"]) / .12) if 0 <= t - d["L"] < .12 else 0.0))
-        c.circle("top", x, y, size + 6, 1)                 # a rim of paper: it reads over the HUD
-        c.line("top", [(px, py), (x, y)], max(3.0, size * .42), 200 if flying else 150)
-        c.circle("top", x, y, size, 245)
-        # cracked, not broken: a split across it, a chip bitten out of its rim
-        c.line("top", [(x + 2 + self.slash_dx[k] * .6, y - 10), (x - 2 + self.slash_dx[k] * .6, y + 10)], 2, 1)
-        c.circle("top", x + 9, y - 7, 6, 1)
         a = t - d["tc"]
-        if a < .3:                                         # the chips knocked off by the cut
+        flying = t >= d["L"]
+        size = 24.0
+        if a < .15:                                        # it flinches at the cut - only nicked
+            size *= 1 - .2 * math.sin(math.pi * a / .15)
+        if 0 <= t - d["L"] < .12:                          # ...and swells as it sets off
+            size *= 1 + .25 * (1 - (t - d["L"]) / .12)
+        # its trail of ink: a long one as it flies at the soul, a short one as it circles
+        n_tr, dt_tr = (12, .016) if flying else (5, .02)
+        for j in range(n_tr, 0, -1):
+            tj = t - j * dt_tr
+            if tj < d["tc"]:
+                continue
+            qx, qy = self.pos_after(k, tj)
+            f = 1 - j / (n_tr + 1)
+            c.circle("top", qx, qy, size * (.25 + .6 * f), fade_gray(215 if flying else 150, f))
+        c.circle("top", x, y, size + 6, 1)                 # a rim of paper: it reads over the HUD
+        c.circle("top", x, y, size, 245)
+        # nicked, not broken: a thin split across it, a chip out of its rim
+        c.line("top", [(x + 2 + self.slash_dx[k] * .6, y - 9), (x - 2 + self.slash_dx[k] * .6, y + 9)], 2, 1)
+        c.circle("top", x + 9, y - 7, 5, 1)
+        if a < .3:                                         # the few chips the cut knocked off
             for r1, r2, r3 in self.spl[k]:
                 q = a / .3
                 ang = (r1 - .5) * 2.2 + (math.pi * .25 if r2 > .5 else -math.pi * .75)
-                dd = 6 + 34 * out_cubic(q) * (.5 + r3)
-                c.circle("top", x + math.cos(ang) * dd, y + math.sin(ang) * dd + 30 * q * q, 3 + 2 * r3,
+                dd = 6 + 30 * out_cubic(q) * (.5 + r3)
+                c.circle("top", x + math.cos(ang) * dd, y + math.sin(ang) * dd + 30 * q * q, 2 + 2 * r3,
                          fade_gray(230, 1 - q))
             spr = self.slash(min(5, int(a / .05)))
             c.sprites.append((spr, int(x - spr.w / 2 + self.slash_dx[k]), int(y - spr.h / 2), 1.0, None))

@@ -91,7 +91,9 @@ LAUNCH = [tm(28.5 + k / 8) for k in range(8)]   # each drop flies at the soul on
 AIM_OPEN = tm(29.5)                             # FIGHT pressed again: the aim meter
 CONFIRMS = [tm(m) for m in (29.625, 29.75, 29.875, 30.125, 30.25, 30.375, 30.5, 30.75)]
 CURTAIN_START = PRESS_T                         # the black over the paper is a curtain of ink from here on
-REVEAL = tm(33)                                 # the rest of it falls: Ink Sans is behind it
+REVEAL = tm(33)                                 # the last piece is gone: Ink Sans is there
+CURTAIN_CUTS = sorted({round(n.t, 4) for n in parse_chart(ROOT / "maidata.txt", OFFSET)[0]
+                       if tm(31) - 1e-3 <= n.t < REVEAL - 1e-3})   # every note of M31-M32.9375: one more bar, one more piece
 FIGHT_SELECT = (WALK_ARRIVE, SECTION_END)
 PRESSES = [PRESS_T, AIM_OPEN]                   # the cut (its edge just touched), then FIGHT for the aim meter
 # Ink Sans is gone while the camera is right inside the canvas (out of shot) - when
@@ -724,7 +726,10 @@ def add_battle(tl: Timeline, nxt, notes):
                                        seed=nxt(), launches=LAUNCH, confirms=CONFIRMS, home=MENU_SOUL))
         # FIGHT on the M29.5 hold: UT's aim meter, painted on the paper; one bar
         # per drop, each stopped (confirmed) on its note - and that drop is smashed
-        tl.attacks.append(A.FightTarget((320, 316), 268, 54, AIM_OPEN, CONFIRMS, CONFIRMS[-1] + .12, slide=.42))
+        # it stays up through M31-M32.9375 - a bar for every piece of ink cut off him -
+        # and is gone the moment the last one is (M33)
+        tl.attacks.append(A.FightTarget((320, 316), 268, 54, AIM_OPEN, CONFIRMS + CURTAIN_CUTS, REVEAL - .14,
+                                        slides=[.42] * len(CONFIRMS) + [.3] * len(CURTAIN_CUTS), fade=.12))
         tl.extra_impacts.append((n.t, 8.0))
         tl.flashes.append((n.t, 40))
     add_rest(tl, nxt)
@@ -830,7 +835,7 @@ def add_external(tl: Timeline, nxt, seg, g: "Geo"):
                 and not is_slash(n.t):
             y = float(np.clip(aim_at(n.t - .32, g)[1], g.iy0 + 10, g.iy1 - 10))
             run.append((n.t, (g.x + g.w + 34, y), (-1.0, 0.0)))
-    shots_run = A.BoneShots(inner, run, speed=640.0, seed=nxt(), trail=True)
+    shots_run = A.BoneShots(inner, run, speed=640.0, seed=nxt(), trail=True, through=True)   # (out through the far side)
     tl.attacks.append(shots_run)
     # ink gathers where each single bone will form, just before it launches - the
     # warning (the walls have their self-writing bar). Own seed: nxt() untouched
