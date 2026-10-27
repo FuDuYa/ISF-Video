@@ -90,7 +90,7 @@ SETTLE = (PRESS_T + .22, .45)                   # (start, duration) of easing ba
 
 AIM_OPEN = tm(29.5)                             # FIGHT pressed again: the aim meter
 CONFIRMS = [tm(m) for m in (29.625, 29.75, 29.875, 30.125, 30.25, 30.375, 30.5, 30.75)]
-LAUNCH = [t - .1 for t in CONFIRMS]            # each drop: a recoil, then flat out at the soul - smashed as it arrives
+LAUNCH = [t - .24 for t in CONFIRMS]           # each drop: a recoil, then an eased run at the soul - smashed as it arrives
 CURTAIN_START = PRESS_T                         # the black over the paper is a curtain of ink from here on
 REVEAL = tm(32.75)                              # the last piece is gone as the 5-4-5-4 sixteenths begin: Ink Sans is there
 CURTAIN_CUTS = sorted({round(n.t, 4) for n in parse_chart(ROOT / "maidata.txt", OFFSET)[0]
@@ -149,57 +149,62 @@ A.PAPER_OFFSET = paper_offset
 
 
 # --------------------------------------------------------------------- the descent
-# M32.75-M48. On the 5-4-5-4 sixteenths the piece of paper under the soul (it is
-# on the FIGHT button) is torn out of the sheet, one side a note, sinking a little
-# each time. Through M33 the rest of the sheet - the buttons, the status bar -
-# and Ink Sans rise away (we are sinking: the stars stream up), while the piece
-# carries the soul to the middle and grows into the new arena; it lands on M34.
-# From then on it slides left and right and changes shape with the phrases while
-# attacks come in from all round it (add_sink). Everything that happens on it is
-# worked out in its own frame (the planner sees it standing still: LOCAL), and
-# moved with it on screen (attacks.ArenaFrame, render.soul_at, scene.paper_mask).
+# M32.75-M48. On the 5-4-5-4 sixteenths the whole sheet - the full width of the
+# screen, the soul on it - drops a little each time, while the buttons and the
+# status bar painted on it stay where they were: they come away from it. Through
+# M33 the camera sinks with the sheet: the buttons, the status bar and Ink Sans
+# rise away, and the sheet gathers into a band across the whole screen (its far
+# edge rolls up from below), carrying the soul; it lands on M34. From M35 it
+# shrinks to half the screen and goes from one side to the other with the
+# phrases (full width again on the breaks and the long slide), while attacks come
+# in from all round it (add_sink). Everything on it is worked out in its own frame
+# (the planner sees it standing still: LOCAL) and moved with it on screen
+# (attacks.ArenaFrame, render.soul_at, scene.sink_paper). No stars here.
 SINK0 = tm(32.75)
 RISE = (tm(33), tm(33.8))
 ARRIVE = tm(34)
 NEW_END = tm(48)
 LOCAL = False                                   # plan.py: everything in the arena's own frame
-PIECE = (100, 64)
-SOUL_LOCAL0 = (320, BOX_BOTTOM - PIECE[1] // 2) # where the soul sits on the piece
-_DX0, _DY0 = 47 - SOUL_LOCAL0[0], 453 - SOUL_LOCAL0[1]   # the piece starts round the soul on FIGHT
-SOUL_RESETS = [(SINK0, SOUL_LOCAL0)]            # (plan.py: from here the soul is in the arena's frame)
+FULL, HALF_W = 640, 300                         # the band's widths: the whole screen / half of it
+_DX0, _DY0 = 0, 80                              # at first the band lies lower: the soul (on FIGHT) is on it
+SOUL_RESETS = [(SINK0, (47, 453 - _DY0))]       # (plan.py: from here the soul is in the arena's frame)
 
 
 def _arena_keys():
     s16, b = MEAS / 16, lambda m: tm(m)
     K = []                                       # (t, dx, dy, w, h, dur, ease)
-    for j in range(4):                           # torn out, a side a note, sinking a little each time
-        K.append((SINK0 + j * s16, _DX0, _DY0 + 3 * (j + 1), PIECE[0], PIECE[1], .05, "out"))
-    K.append((b(33), 0, 0, 220, 150, ARRIVE - b(33) - .02, "smooth"))   # carried to the middle, growing
-    K.append((ARRIVE, 0, 7, 240, 138, .05, "out"))                      # lands
-    K.append((ARRIVE + .07, 0, 0, 220, 150, .22, "out"))
-    for k, m in enumerate((34.125, 34.25, 34.375)):                     # three strides left on the pairs
-        K.append((b(m), -40 * (k + 1), 0, 220, 150, .08, "out"))
-    K += [(b(35), 120, 0, 270, 120, .45, "smooth"),                     # glides across, going wide
-          (b(35.5), -60, 0, 170, 150, .4, "smooth"),                    # ...back, going tall
-          (b(36), 70, 0, 240, 140, .4, "smooth"),
-          (b(36.5), 0, 0, 220, 150, .3, "smooth"),
-          (b(37), 100, 0, 220, 150, .5, "smooth"),
-          (b(38), -100, 0, 220, 150, .5, "smooth"),
-          (b(38.875), 0, 0, 300, 120, .1, "out")]                       # the break: it snaps wide
+    for j in range(4):                           # the sheet drops a little on each sixteenth
+        K.append((SINK0 + j * s16, _DX0, _DY0 + 3 * (j + 1), FULL, 150, .05, "out"))
+    K.append((b(33), 0, 0, FULL, 150, ARRIVE - b(33) - .02, "smooth"))  # carried up into the band
+    K.append((ARRIVE, 0, 6, FULL, 138, .05, "out"))                     # lands
+    K.append((ARRIVE + .07, 0, 0, FULL, 150, .22, "out"))
+    for m in (34.125, 34.25, 34.375):                                   # it flexes on the three pairs
+        K.append((b(m), 0, 0, FULL, 134, .05, "out"))
+        K.append((b(m) + .06, 0, 0, FULL, 150, .08, "out"))
+    H2 = (FULL - HALF_W) // 2 - 10                                      # how far a half sits off the middle
+    K += [(b(35), H2, 0, HALF_W, 150, .35, "smooth"),                   # it shrinks into the right half
+          (b(35.5), -H2, 0, HALF_W, 150, .35, "smooth"),                # ...goes over to the left half
+          (b(36), H2, 0, HALF_W, 150, .35, "smooth"),
+          (b(36.5), 0, 0, HALF_W, 150, .3, "smooth"),
+          (b(37), H2, 0, HALF_W, 150, .4, "smooth"),
+          (b(38), -H2, 0, HALF_W, 150, .4, "smooth"),
+          (b(38.875), 0, 0, FULL, 130, .1, "out")]                      # the break: the whole width again
     side = -1
     for m in (39, 40, 41):                                              # bar by bar, from side to side
-        K.append((b(m), 100 * side, 0, 300, 120, .35, "smooth"))
-        K.append((b(m + .5), 100 * side, 0, 270, 140, .12, "out"))      # (it flexes on the pairs)
+        K.append((b(m), H2 * side, 0, HALF_W, 150, .35, "smooth"))
+        K.append((b(m + .5), H2 * side, 0, HALF_W - 20, 140, .06, "out"))   # (it flexes on the pairs)
+        K.append((b(m + .5) + .08, H2 * side, 0, HALF_W, 150, .12, "out"))
         side = -side
-    K += [(b(42), 0, 0, 220, 150, .35, "smooth")]
+    K += [(b(42), 0, 0, FULL, 150, .35, "smooth")]
     side = 1
     for m in (43, 44, 45):
-        K.append((b(m), 100 * side, 0, 300, 120, .35, "smooth"))
-        K.append((b(m + .5), 100 * side, 0, 270, 140, .12, "out"))
+        K.append((b(m), H2 * side, 0, HALF_W, 150, .35, "smooth"))
+        K.append((b(m + .5), H2 * side, 0, HALF_W - 20, 140, .06, "out"))
+        K.append((b(m + .5) + .08, H2 * side, 0, HALF_W, 150, .12, "out"))
         side = -side
-    K += [(b(45.875), 0, 0, 180, 150, .4, "smooth"),                    # the long slide: back to the middle
-          (b(47), 0, 0, 240, 150, .08, "out"),                          # the break
-          (b(47) + .1, 0, 0, 220, 150, .3, "out")]
+    K += [(b(45.875), 0, 0, FULL, 150, .4, "smooth"),                   # the long slide: the whole width
+          (b(47), 0, 0, FULL, 134, .06, "out"),                         # the break
+          (b(47) + .08, 0, 0, FULL, 150, .25, "out")]
     return K
 
 
@@ -215,7 +220,7 @@ def _ease(kind, u):
 
 def arena_state(t):
     """(dx, dy, w, h) of the arena at t: its offset on screen and its size."""
-    st = [_DX0, _DY0, float(PIECE[0]), float(PIECE[1])]
+    st = [_DX0, _DY0, float(FULL), 150.0]
     for tk, dx, dy, w, h, dur, ease in ARENA_KEYS:
         if t < tk:
             break

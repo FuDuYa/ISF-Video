@@ -3850,8 +3850,8 @@ class HuntingInk(Attack):
     R_SWIRL = 82.0      # ...out to this radius (the soul is near the corner: keep them on screen)
     SCATTER = .32       # s to go from the ring to its spot on the arc
 
-    RECOIL = .12        # s it pulls back, gathering itself, before it flies
-    DASH = .1           # s from its spot to the soul - smashed as it gets there
+    RECOIL = .14        # s it pulls back, gathering itself, before it flies
+    DASH = .24          # s from its spot to the soul (eased: off slowly, fast, easing in) - smashed as it gets there
 
     def rel_before_launch(self, k, t):
         """Where a cut drop is, relative to the soul, before it flies."""
@@ -3883,7 +3883,8 @@ class HuntingInk(Attack):
             return S + self.rel_before_launch(k, t)
         rel = self.rel_before_launch(k, d["L"] - 1e-4)
         u = clamp((t - d["L"]) / max(.03, d["S"] - d["L"]))
-        return S + rel * (1 - .82 * u ** 1.3)              # fast, straight at it
+        e = u * u * (3 - 2 * u) * .7 + u ** 2 * .3         # off from the recoil slowly, fast, easing in at the end
+        return S + rel * (1 - .82 * e)
 
     def draw_after(self, c, t, k):
         d = self.after[k]

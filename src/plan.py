@@ -20,7 +20,7 @@ import choreo as C
 import scene as S
 from common import ROOT, FPS
 
-X0, X1, Y0, Y1 = 90, 550, 226, 392      # crop window that contains every arena
+X0, X1, Y0, Y1 = 0, 640, 226, 392       # crop window that contains every arena (the descent: the full width)
 T_START = 7.0
 T_END = 146.5
 HALF = 4                                 # 8x8 hitbox
@@ -42,17 +42,38 @@ def valid_mask(box):
     x, y, w, h = box
     b = C.BORDER
     m = np.zeros((Y1 - Y0, X1 - X0), bool)
-    xa, xb = x + b + 8, x + w - b - 8
-    ya, yb = y + b + 8, y + h - b - 8
+    xa, xb = max(X0, x + b + 8), min(X1 - 1, x + w - b - 8)
+    ya, yb = max(Y0, y + b + 8), min(Y1 - 1, y + h - b - 8)
     m[ya - Y0:yb - Y0 + 1, xa - X0:xb - X0 + 1] = True
     return m
+
+
+class Valid:
+    """Where the soul may be in each frame: inside the arena. Only the boxes are
+    kept (a mask per frame of the full width would take too much memory); the
+    masks are made when asked for (a few are cached)."""
+
+    def __init__(self, boxes):
+        self.boxes = boxes
+        self.cache = {}
+
+    def __len__(self):
+        return len(self.boxes)
+
+    def __getitem__(self, i):
+        b = self.boxes[i]
+        if b not in self.cache:
+            if len(self.cache) > 64:
+                self.cache.clear()
+            self.cache[b] = valid_mask(b)
+        return self.cache[b]
 
 
 def safe_masks(tl):
     f0, f1 = frame_range()
     n = f1 - f0 + 1
     safe = np.zeros((n, Y1 - Y0, X1 - X0), bool)
-    valid = np.zeros_like(safe)
+    boxes = []
     for i in range(n):
         t = (f0 + i) / FPS
         box = C.box_at(t)
@@ -60,12 +81,12 @@ def safe_masks(tl):
         haz = S.hazard_inside(ctx, box)[Y0:Y1, X0:X1]
         half = HALF_WIDE if WIDE[0] <= t < WIDE[1] else HALF
         unsafe = ndi.maximum_filter(haz, size=2 * half + 1) if haz.any() else haz
-        v = valid_mask(box)
-        valid[i] = v
+        boxes.append(tuple(int(v) for v in box))
+        v = valid_mask(boxes[-1])
         safe[i] = v & ~unsafe
         if i % 1200 == 0:
             print(f"  hazards {t:6.1f}s", flush=True)
-    return safe, valid
+    return safe, Valid(boxes)
 
 
 def backward(safe, valid):

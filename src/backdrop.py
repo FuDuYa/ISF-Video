@@ -410,11 +410,7 @@ class Backdrop:
         flows = C.STAR_FLOWS                     # (the paper moves with them in the run and climb)
         burst = C.tm(24.75)
         sky = StarRain(C.tm(17), burst + .4, flows, V=400.0, n=40, seed=13, windows=[(C.tm(17), burst)])
-        # the descent: they are back as we sink - streaming up past us - and turn
-        # with the phrases while the arena slides about
-        dflows = [(C.RISE[0], "up"), (C.tm(38.875), "left"), (C.tm(42), "right"), (C.tm(45.875), "up")]
-        deep = StarRain(C.RISE[0], C.NEW_END + .4, dflows, V=400.0, n=40, seed=29, windows=[(C.RISE[0], C.NEW_END)])
-        self.full = [sky, deep]
+        self.full = [sky]                       # (no stars in the descent)
         self.t0s = [e.t0 for e in self.els]
         self.maxlen = max((e.t1 - e.t0 for e in self.els), default=0)
 

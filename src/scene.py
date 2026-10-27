@@ -328,35 +328,26 @@ def edge_push(t):
 
 
 def sink_paper(t, box, XX, YY, EDGE):
-    """The descent: the torn-out piece (the arena, moving) and - until it has risen
-    away - the rest of the sheet with a hole where the piece was. The tear runs
-    round the piece one side a note on the 5-4-5-4 sixteenths (a dark wet line)."""
+    """The descent: the whole sheet (the full width of the screen) drops a little
+    on each of the 5-4-5-4 sixteenths - the buttons painted on it stay put; through
+    M33 it gathers into the band of the arena (its far edge rolls up from below);
+    from M34 the paper is the arena itself, moving."""
     x, y, w, h = box
-    d = np.maximum(np.maximum(x - XX, XX - (x + w)), np.maximum(y - YY, YY - (y + h)))
-    piece = d - EDGE * 4 < 0
-    edge = (d - EDGE * 4 > -2.5) & piece                  # its torn edge, wet and dark (seen over the sheet too)
-    up = C.rise(t)
-    if up > H + 300:
-        return piece, (edge if t < C.ARRIVE + .4 else None)
     x0, y0, x1, y1 = C.REST_RECT
-    sheet = (XX >= x0) & (XX < x1) & (YY >= y0 - up) & (YY < y1 - up)
-    hx, hy, hw, hh = C.arena_box(C.SINK0)                 # where the piece was cut out of the sheet
-    hy -= up
-    dh = np.maximum(np.maximum(hx - XX, XX - (hx + hw)), np.maximum(hy - YY, YY - (hy + hh)))
-    hole = dh - EDGE * 4 < 1
-    s16 = C.MEAS / 16
-    k = (t - C.SINK0) / s16                               # how much of the tear is done (sides)
-    rim = None
     if t < C.RISE[0]:
-        band = (dh - EDGE * 4 > -2) & (dh - EDGE * 4 < 2)
-        sides = [YY < hy + hh * .25, XX > hx + hw * .75, YY > hy + hh * .75, XX < hx + hw * .25]
-        cut = np.zeros_like(band)
-        for j in range(4):
-            if k >= j:
-                cut |= sides[j]
-        rim = band & cut
-        return piece | sheet, rim                         # (still in one piece: only the tear shows)
-    return piece | (sheet & ~hole), edge
+        drop = C.arena_offset(t)[1] - C._DY0
+        r = (x0, y0 + drop, x1, y1 + drop)
+    elif t < C.ARRIVE:
+        u = smooth((t - C.RISE[0]) / (C.ARRIVE - C.RISE[0]))
+        drop = 12
+        r = [a + (b_ - a) * u for a, b_ in zip((x0, y0 + drop, x1, y1), (x, y, x + w, y + h))]
+    else:
+        r = (x, y, x + w, y + h)
+    d = np.maximum(np.maximum(r[0] - XX, XX - r[2]), np.maximum(r[1] - YY, YY - r[3]))
+    ragged = d - EDGE * 4
+    paper = ragged < 0
+    wet = (ragged > -2.5) & paper if C.SINK0 <= t < C.ARRIVE + .4 else None
+    return paper, wet
 
 
 def compose_canvas(frame, t, tl, box, ctx, under_top=None):
