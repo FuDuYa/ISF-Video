@@ -87,9 +87,10 @@ CLOSE_IN = [tm(25.75 + k / 4) for k in range(9)]   # the ring lunges in on every
 # there through M33; the old placeholder takes over from M34)
 SECTION_END = tm(34)                            # (he stands there, revealed, through M33)
 SETTLE = (PRESS_T + .22, .45)                   # (start, duration) of easing back onto it
-LAUNCH = [tm(28.5 + k / 8) for k in range(8)]   # each drop flies at the soul on its eighth
+
 AIM_OPEN = tm(29.5)                             # FIGHT pressed again: the aim meter
 CONFIRMS = [tm(m) for m in (29.625, 29.75, 29.875, 30.125, 30.25, 30.375, 30.5, 30.75)]
+LAUNCH = [t - .1 for t in CONFIRMS]            # each drop: a recoil, then flat out at the soul - smashed as it arrives
 CURTAIN_START = PRESS_T                         # the black over the paper is a curtain of ink from here on
 REVEAL = tm(32.75)                              # the last piece is gone as the 5-4-5-4 sixteenths begin: Ink Sans is there
 CURTAIN_CUTS = sorted({round(n.t, 4) for n in parse_chart(ROOT / "maidata.txt", OFFSET)[0]

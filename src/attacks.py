@@ -3519,51 +3519,118 @@ class InkShieldStrikes(Attack):
             pen = pen_turned(ang, side < 0)
         return (pen, int(bx - pen.w / 2), int(by - pen.h / 2), 1.0, None)
 
+    def blade_sprite(self, P, a, side):
+        """The cut, stopped on the brush: (Sprite, x, y, gain, None) - a tapered white
+        arc ending at P, with the flare of the clash."""
+        from common import Sprite
+        R = 120
+        img = Image.new("L", (2 * R, 2 * R))
+        d = ImageDraw.Draw(img)
+        g = 1 - smooth((a - .12) / .18)
+        shake = (3 * math.sin(a * 180)) * (1 - clamp(a / .2))
+        reach = out_cubic(clamp(a / .04))                     # it sweeps in in a blink
+        n = 18
+        pts = []
+        for k in range(n + 1):
+            u = k / n
+            th = math.radians(-38 + 34 * u)                   # an arc coming in from the upper right (clear of his face)
+            r = 105 * (1 - u)
+            pts.append((R + side * (math.cos(th) * r * .9) + shake, R - math.sin(-th) * r * 1.1 + shake * .3))
+        m = max(2, int((n + 1) * reach))
+        for k in range(m - 1):
+            w = 1 + 7 * (k / n) ** 1.2
+            d.line([pts[k], pts[k + 1]], fill=int(255 * g), width=max(1, int(round(w))))
+        if a < .12:                                           # the clash
+            q = a / .12
+            for k in range(10):
+                ang = k / 10 * math.tau + .3
+                L = (12 + 44 * out_cubic(q)) * (1.3 if k % 2 else .7)
+                d.line([(R + math.cos(ang) * L * .3, R + math.sin(ang) * L * .3),
+                        (R + math.cos(ang) * L, R + math.sin(ang) * L)], fill=int(255 * (1 - q)), width=3 if k % 2 else 2)
+            rr = 6 + 14 * q
+            d.ellipse((R - rr, R - rr, R + rr, R + rr), fill=int(255 * (1 - q)))
+        v = np.asarray(img).astype(np.int16)
+        # fading is done by dithering (ordered, 4x4), never by greying: the pixels
+        # stay white, fewer and fewer of them
+        bayer = (np.array([[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]]) + .5) / 16 * 255
+        thr = np.tile(bayer, (v.shape[0] // 4 + 1, v.shape[1] // 4 + 1))[:v.shape[0], :v.shape[1]]
+        alpha = v > thr
+        return (Sprite(np.where(alpha, 255, 0).astype(np.uint8), alpha), int(P[0] - R), int(P[1] - R), 1.0, None)
+
+    def contact(self, i):
+        """Where the slash meets the brush (the brush's middle)."""
+        j = self.jit[i]
+        return np.array([self.C[0] + j[0] * 8, self.C[1] - 2 + j[1] * 6])
+
     def draw(self, c):
         t = c.t
-        pens = []
+        pens, slashes = [], []
         for i, ts in enumerate(self.strikes):
             a = t - ts
-            if a < -.2 or a > .9:
+            if a < -.2 or a > 1.2:
                 continue
             p = self.brush(c, i)
             if p is not None:
                 pens.append(p)
             if a < 0:
                 continue
-            pts = self.arc(i)
-            n = len(pts)
-            if a < .3:                                        # the crescent, flung in one stroke
-                m = max(2, int(n * clamp(a / .06)))
-                for k in range(m - 1):
-                    w = 16 * (1 - .75 * k / n)
-                    c.line("top", [pts[k], pts[k + 1]], w, 165)
-                    c.circle("top", pts[k][0], pts[k][1], w, 165)
-                if a < .2:                                    # drops thrown off the end of the cut
-                    end, d = pts[-1], pts[-1] - pts[-2]
-                    d = d / (np.linalg.norm(d) + 1e-9)
-                    for q, (r1, r2, r3) in enumerate(self.drops[i]):
-                        sp = 120 + 160 * r1
-                        p = end + d * sp * a + np.array([(r2 - .5) * 60 * a, 300 * a * a])
-                        c.circle("top", p[0], p[1], 4 + 4 * r3, fade_gray(165, 1 - a / .2))
-            else:                                             # it runs away as drips
-                b = (a - .3) / .6
-                for k in range(0, n, 3):
-                    x, y = pts[k]
-                    c.line("top", [(x, y), (x, y + 46 * b * (.6 + .4 * math.sin(k)))], 4, fade_gray(150, 1 - b))
-            # the slash, cut straight down over him - stopped by the brush and the ink
+            P = self.contact(i)
+            side = 1 if i % 2 == 0 else -1
+            rng = np.random.default_rng(4100 + i)
+            # the blade: a white cut sweeping in from the upper right, across the line
+            # of the brush, and stopped dead on it - it shudders there and fades; the
+            # clash flares where they meet. Drawn over the brush (a sprite after it)
             if a < .3:
-                spr = self.slash(min(5, int(a / .05)))
-                c.sprites.append((spr, int(self.C[0] - spr.w / 2 + self.jit[i][4] * 6), int(self.C[1] - spr.h / 2),
-                                  1.0, None))
-            if a < .25:                                       # sparks where it breaks on the brush
-                hit = (self.C[0] + self.jit[i][0] * 8, self.C[1] - 2 + self.jit[i][1] * 6)
-                for q in range(9):
-                    ang = q / 9 * math.tau + self.jit[i][5]
-                    d = 10 + 60 * out_cubic(a / .25)
-                    c.circle("top", hit[0] + math.cos(ang) * d, hit[1] + math.sin(ang) * d, 5,
-                             fade_gray(240, 1 - a / .25))
-        c.sprites.extend(pens)                                # the brush in front of the slash
+                slashes.append(self.blade_sprite(P, a, side))
+            # the ink the brush flings off as it takes the cut: a dry-brush crescent
+            # (a few bristle lines, broken), long threads and a spray of drops of every
+            # size - white over the dark, black where they come down on the paper
+            if a < .45:
+                q = clamp(a / .07)
+                g = 1 - smooth((a - .12) / .33)
+                a0 = math.radians(-160 if side > 0 else -20)
+                sweep = math.radians(150) * side
+                for b in range(6):
+                    off = (b - 2.5) * 3.2
+                    R = 64 + off
+                    n = 22
+                    m = max(2, int(n * q))
+                    pts = []
+                    for k in range(m):
+                        th = a0 + sweep * k / n
+                        pts.append((P[0] + math.cos(th) * R * 1.15, P[1] + math.sin(th) * R * .8 + 8))
+                    gaps = rng.random(n) < .18
+                    for k in range(len(pts) - 1):
+                        if gaps[k]:
+                            continue
+                        w = (2 + 3 * rng.random()) * (1 - .6 * k / n)
+                        c.line("top", [pts[k], pts[k + 1]], w, fade_gray(225 - 18 * abs(b - 2.5), g))
+            for k in range(30):                               # the spray: drawn out into streaks as they fly
+                r1, r2, r3 = rng.random(), rng.random(), rng.random()
+                ang = math.radians(-90 + side * (10 + 120 * r1)) + (r2 - .5) * .5
+                v = 300 + 560 * r2
+                life = .4 + .45 * r3
+                if a >= life:
+                    continue
+                def at(tt):
+                    return (P[0] + math.cos(ang) * v * tt, P[1] + math.sin(ang) * v * tt + 900 * tt * tt)
+                x, y = at(a)
+                px_, py_ = at(max(0.0, a - .03))
+                size = 1.0 + 3.0 * r3 ** 2
+                gg = 1 - smooth((a - life * .6) / (life * .4))
+                c.line("top", [(px_, py_), (x, y)], max(1.0, size), fade_gray(225, gg))
+                c.circle("top", x, y, size * 1.7, fade_gray(240, gg))
+            for k in range(3):                                # long threads of ink, dripping
+                r1 = rng.random()
+                ang = math.radians(-90 + side * (35 + 40 * k + 10 * r1))
+                L = (40 + 50 * r1) * out_cubic(clamp(a / .12))
+                gg = 1 - smooth((a - .2) / .4)
+                end = (P[0] + math.cos(ang) * L, P[1] + math.sin(ang) * L + 120 * a * a)
+                mid = ((P[0] + end[0]) / 2 + side * 6, (P[1] + end[1]) / 2 - 4)
+                c.line("top", [tuple(P), mid, end], 2, fade_gray(220, gg))
+                c.circle("top", end[0], end[1] + 30 * a * a, 4, fade_gray(230, gg))
+        c.sprites.extend(pens)                                # the brush...
+        c.sprites.extend(slashes)                             # ...and the blade stopped on it, over it
 
 
 class HuntingInk(Attack):
@@ -3694,6 +3761,9 @@ class HuntingInk(Attack):
     R_SWIRL = 82.0      # ...out to this radius (the soul is near the corner: keep them on screen)
     SCATTER = .32       # s to go from the ring to its spot on the arc
 
+    RECOIL = .12        # s it pulls back, gathering itself, before it flies
+    DASH = .1           # s from its spot to the soul - smashed as it gets there
+
     def rel_before_launch(self, k, t):
         """Where a cut drop is, relative to the soul, before it flies."""
         d = self.after[k]
@@ -3704,9 +3774,14 @@ class HuntingInk(Attack):
         ring = np.array([math.cos(th) * r, math.sin(th) * r * self.FLAT1])
         v = smooth((a - self.SWIRL) / self.SCATTER)
         rel = ring + (d["rel"] - ring) * v
-        if v >= 1:                                         # waiting: it trembles more as its turn comes
+        if v >= 1:                                         # waiting, creeping in a little, trembling more as its turn comes
+            t_wait = d["tc"] + self.SWIRL + self.SCATTER
+            rel = rel * (1 - .12 * smooth((t - t_wait) / max(.1, d["L"] - self.RECOIL - t_wait)))
             w = .8 + 2.2 * smooth((t - (d["L"] - .6)) / .6)
             rel = rel + np.array([w * math.sin(t * 57 + k), w * math.cos(t * 49 + 2 * k)])
+        rc = clamp((t - (d["L"] - self.RECOIL)) / self.RECOIL)
+        if rc > 0:                                         # the recoil: it draws back before it flies
+            rel = rel * (1 + .16 * math.sin(math.pi / 2 * rc))
         return rel
 
     def pos_after(self, k, t):
@@ -3717,9 +3792,9 @@ class HuntingInk(Attack):
         S = np.asarray(self.target(t), float)
         if t < d["L"]:
             return S + self.rel_before_launch(k, t)
-        rel = self.rel_before_launch(k, d["L"])
-        u = clamp((t - d["L"]) / max(.05, d["S"] - d["L"]))
-        return S + rel * (1 - .8 * u ** 1.7)
+        rel = self.rel_before_launch(k, d["L"] - 1e-4)
+        u = clamp((t - d["L"]) / max(.03, d["S"] - d["L"]))
+        return S + rel * (1 - .82 * u ** 1.3)              # fast, straight at it
 
     def draw_after(self, c, t, k):
         d = self.after[k]
@@ -3752,10 +3827,11 @@ class HuntingInk(Attack):
         R = 8.0
         if a < .15:                                        # it flinches at the cut - only nicked
             R *= 1 - .22 * math.sin(math.pi * a / .15)
-        if 0 <= t - d["L"] < .1:                           # ...and gathers itself as it sets off
-            R *= 1 + .3 * math.sin(math.pi * (t - d["L"]) / .1)
+        rc = (t - (d["L"] - self.RECOIL)) / self.RECOIL
+        if 0 <= rc < 1:                                    # ...gathers itself as it draws back
+            R *= 1 + .3 * math.sin(math.pi / 2 * rc)
         # its trail: a tapering line of wet ink along where it has been
-        n_tr, dt_tr = (14, .012) if flying else (6, .016)
+        n_tr, dt_tr = (14, .006) if flying else (6, .016)
         trail = [self.pos_after(k, max(d["tc"], t - j * dt_tr)) for j in range(n_tr + 1)]
         for j in range(n_tr):
             f = 1 - j / n_tr
