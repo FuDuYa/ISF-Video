@@ -1,8 +1,11 @@
 """The ink over Ink Sans (M28-M34).
 
-After the FIGHT cut he is gone - stepped behind a patch of black ink just the
-size of him, black on the black above the paper, so there is simply nothing
-there. On every note of M31-M32.9375 the aim meter is confirmed once more and one
+After the FIGHT cut he is gone - stepped behind a patch of black ink just his
+shape (a little bigger, with a ragged edge), black on the black above the paper,
+so there is simply nothing there. Every piece of it lies over some of him, so
+every cut shows a bit more of him - no cut is wasted on empty dark. The very
+last bar's cut is not his to take: his brush blinks in and blocks it
+(attacks.InkShieldStrikes) - by then the ink is all gone. On every note of M31-M32.9375 the aim meter is confirmed once more and one
 piece of the patch takes the cut: it does not break like glass, it glitches out
 as ink - torn into bands that slip sideways, scanlines, blocks dropping out,
 wet edges, ink dragged down - and is gone, showing a bit more of him behind it.
@@ -36,25 +39,32 @@ def _noise(rng, h, w, cell):
 class Curtain:
     def __init__(self, seed=31):
         self.t0, self.t1, self.reveal = C.CURTAIN_START, C.SECTION_END, C.REVEAL
-        self.cuts = list(C.CURTAIN_CUTS)
+        self.cuts = list(C.CURTAIN_PIECE_CUTS)
         rng = np.random.default_rng(seed)
         x0, y0, x1, y1 = BOX
         yy, xx = np.mgrid[0:H, 0:W]
-        # the patch: Ink Sans's box with a ragged, inky edge
-        cx, cy, rx, ry = (x0 + x1) / 2, (y0 + y1) / 2, (x1 - x0) / 2, (y1 - y0) / 2
+        # the patch: his own shape, grown a little, with a ragged, inky edge
+        import scene as S
+        from scipy import ndimage as ndi
+        sil = np.zeros((H, W), bool)
+        o = S.INK["origin"]
+        for part, name in (("legs", "legs.png"), ("body", "body.png"), ("head", "head_black_eyes.png")):
+            sp = sprite(name)
+            px, py = o[0] + S.INK[part][0], o[1] + S.INK[part][1]
+            sil[py:py + sp.h, px:px + sp.w] |= sp.a
+        dist = ndi.distance_transform_edt(~sil)
         nz = np.zeros((H, W))
-        nz[y0 - 12:y1 + 12, x0 - 12:x1 + 12] = _noise(rng, y1 - y0 + 24, x1 - x0 + 24, 9)
-        d = np.maximum(np.abs(xx - cx) - rx, np.abs(yy - cy) - ry)
-        self.patch = d < 6 * (nz - .35)
-        # its pieces: one per cut
+        nz[y0 - 12:y1 + 12, x0 - 12:x1 + 12] = _noise(rng, y1 - y0 + 24, x1 - x0 + 24, 6)
+        self.patch = dist < 5 + 6 * nz                       # (he breathes a few px: it still covers him)
+        # its pieces: one per cut, spread evenly over him (Lloyd's relaxation)
         n = len(self.cuts)
-        cols, rows = 6, max(1, math.ceil(n / 6))
-        pts = []
-        for i in range(cols):
-            for j in range(rows):
-                pts.append((x0 + (i + rng.uniform(.2, .8)) * (x1 - x0) / cols,
-                            y0 + (j + rng.uniform(.2, .8)) * (y1 - y0) / rows))
-        pts = np.array(pts[:n])
+        ys, xs = np.nonzero(sil)
+        pts = np.stack([xs, ys], 1)[rng.choice(len(xs), n, replace=False)].astype(float)
+        for _ in range(12):
+            lab = np.argmin((xs[:, None] - pts[:, 0]) ** 2 + (ys[:, None] - pts[:, 1]) ** 2, axis=1)
+            for k in range(n):
+                if (lab == k).any():
+                    pts[k] = (xs[lab == k].mean(), ys[lab == k].mean())
         wx = np.zeros((H, W)); wy = np.zeros((H, W))
         wx[y0 - 12:y1 + 12, x0 - 12:x1 + 12] = _noise(rng, y1 - y0 + 24, x1 - x0 + 24, 7) - .5
         wy[y0 - 12:y1 + 12, x0 - 12:x1 + 12] = _noise(rng, y1 - y0 + 24, x1 - x0 + 24, 7) - .5
@@ -66,7 +76,7 @@ class Curtain:
         for k, tc in zip(order, self.cuts):
             self.cut_of[int(k)] = tc
         # how long each one glitches: never past the reveal
-        self.dur = {k: max(.05, min(GLITCH, self.reveal - .02 - tc)) for k, tc in self.cut_of.items()}
+        self.dur = {k: max(.05, min(GLITCH, self.reveal - .03 - tc)) for k, tc in self.cut_of.items()}
         self.boxes = {}
         for k in range(n):
             ys, xs = np.nonzero(self.label == k)

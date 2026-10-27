@@ -91,9 +91,11 @@ LAUNCH = [tm(28.5 + k / 8) for k in range(8)]   # each drop flies at the soul on
 AIM_OPEN = tm(29.5)                             # FIGHT pressed again: the aim meter
 CONFIRMS = [tm(m) for m in (29.625, 29.75, 29.875, 30.125, 30.25, 30.375, 30.5, 30.75)]
 CURTAIN_START = PRESS_T                         # the black over the paper is a curtain of ink from here on
-REVEAL = tm(33)                                 # the last piece is gone: Ink Sans is there
+REVEAL = tm(32.75)                              # the last piece is gone as the 5-4-5-4 sixteenths begin: Ink Sans is there
 CURTAIN_CUTS = sorted({round(n.t, 4) for n in parse_chart(ROOT / "maidata.txt", OFFSET)[0]
-                       if tm(31) - 1e-3 <= n.t < REVEAL - 1e-3})   # every note of M31-M32.9375: one more bar, one more piece
+                       if tm(31) - 1e-3 <= n.t < REVEAL - 1e-3})   # every note of M31-M32.6875: one more bar
+CURTAIN_PIECE_CUTS = CURTAIN_CUTS[:-1]          # ...each cuts away a piece of the ink over him;
+PARRY_T = CURTAIN_CUTS[-1]                      # the last one is blocked by his brush, blinking in
 FIGHT_SELECT = (WALK_ARRIVE, SECTION_END)
 PRESSES = [PRESS_T, AIM_OPEN]                   # the cut (its edge just touched), then FIGHT for the aim meter
 # Ink Sans is gone while the camera is right inside the canvas (out of shot) - when
@@ -956,6 +958,11 @@ def add_rest(tl: Timeline, nxt):
     ink that had closed in on it (attacks.HuntingInk)."""
     actions.BRUSH_AWAY[:] = []
     actions.PARRIES[:] = []
+    # the last bar's cut: his brush blinks off his back and blocks it (the ink
+    # over him is all gone by then)
+    shield = A.InkShieldStrikes((314, 150), [PARRY_T], seed=nxt())
+    tl.attacks.append(shield)
+    actions.BRUSH_AWAY[:] = [shield.brush_away]
     for t in PRESSES:
         tl.extra_impacts.append((t, 6.0 if t == PRESS_T else 3.0))
     for t in CONFIRMS:                                  # each confirmed bar smashes a drop

@@ -43,6 +43,20 @@ def _deep_focus(t):
     return (min(max(sx, g.ix0 + hx), g.ix1 - hx), min(max(sy, g.iy0 + hy), g.iy1 - hy))
 
 
+def _tunnel_push(z0=1.08, n=14):
+    """Camera keys from M21 to DEEP_T: a steady push in, even in log zoom (no
+    standing still and then lunging in), easing in at the start and settling at
+    the end."""
+    t0, t1 = tm(21), DEEP_T
+    out = []
+    for k in range(n + 1):
+        u = k / n
+        f = .55 * u + .45 * (u * u * (3 - 2 * u))
+        out.append(dict(t=t0 + (t1 - t0) * u, focus=(320, 313), zoom=z0 * (DEEP / z0) ** f,
+                        pitch=0, yaw=0, roll=0, ease="linear" if k else "smooth"))
+    return out
+
+
 KEYS = [
     dict(t=7.0, focus=(320, 240), zoom=1.0, pitch=0, yaw=0, roll=0),
     # the brush paints with the camera held still
@@ -77,17 +91,11 @@ KEYS = [
     dict(t=tm(20.5), focus=(320, 312), zoom=1.14, pitch=0, yaw=0, roll=0, ease="in"),  # the spiral rises
     dict(t=tm(20.75), focus=(320, 306), zoom=1.08, pitch=0, yaw=0, roll=0, ease="out"),
     # tunnel: the paper spreads over the screen while we push right into the
-    # canvas - all the way inside the rectangle, whose edges we cannot see...
-    # (hardly any push while the paper creeps out, so its spreading reads slowly;
-    # then closer and closer)
-    dict(t=tm(21), focus=(320, 313), zoom=1.03, pitch=0, yaw=0, roll=0),
-    dict(t=tm(22), focus=(320, 313), zoom=1.15, pitch=0, yaw=0, roll=0, ease="linear"),
-    dict(t=DEEP_T - .14, focus=(320, 313), zoom=2.6, pitch=0, yaw=0, roll=0, ease="in"),
-    # snap all the way in, onto the soul: the whole frame now lies well inside
-    # the rectangle - which is only now there to be found (attacks.CanvasCube)
-    # ...the last push only just before it pulls back: in until the rectangle's
-    # edges have just left the frame (centred on it), and a moment's pause there
-    dict(t=DEEP_T, focus=(320, 313), zoom=DEEP, pitch=0, yaw=0, roll=0, ease="in"),
+    # canvas - all the way inside the rectangle, whose edges we cannot see. The
+    # push starts the moment the 3x3 begins (M21) and goes on steadily (even in
+    # log zoom, so it reads as one steady move, easing in and settling) until the
+    # rectangle's edges have just left the frame (DEEP_T); a moment's pause there
+    *_tunnel_push(),
     dict(t=tm(22.75), focus=(320, 313), zoom=DEEP, pitch=0, yaw=0, roll=0, ease="linear"),
     # ...then pull back: its edges slide in from outside the frame - the soul
     # was trapped in a rectangle all along

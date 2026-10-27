@@ -1547,21 +1547,28 @@ class FlyingBone:
         # the canvas at once and the bone would seem simply to vanish)
         a = t - (self.t_out - self.L / self.v)               # from the moment its head touches the edge
         if a >= 0:
-            # a small mark of ink where it went out: just enough to give it a feel -
-            # a ragged little blot on the edge and a short smear dragged in after it
-            q = self.S + self.d * self.s_out
-            g = fade_gray(85, 1 - smooth((a - .2) / .4))
-            r = 2.5 + 2.5 * out_cubic(min(1, a / .12))
-            c.poly("art", jagged_circle(q[0], q[1], r, self.blot, n=10), g)
-            back = q - self.d * (6 + 6 * self.blot[3])
-            c.line("art", [back, q], 2, g)
-            c.circle("art", q[0] - self.d[0] * 9 + self.d[1] * 3, q[1] - self.d[1] * 9 - self.d[0] * 3, 2, g)
-            if self.trail and not self.through and a < .4:  # (a wall: it splashes out past the edge as it is drunk)
-                for j in range(3):
+            # the ink it leaves where it goes out spreads flat along the edge, like
+            # water soaking into the paper: a thin, pale, ragged band lying along the
+            # edge (it hardly reaches in), growing longer as it spreads, then drying
+            q = self.S + self.d * (self.s_out - 1.5)
+            e = np.array([-self.d[1], self.d[0]])            # along the edge
+            u = out_cubic(min(1.0, a / .25))
+            g = fade_gray(62, 1 - smooth((a - .25) / .45))
+            half = 4 + 7 * u                                 # along the edge
+            deep = 1.2 + 1.3 * u                             # into the paper
+            pts = []
+            for j in range(12):
+                th = j / 12 * math.tau
+                wob = .75 + .5 * self.blot[j % 14]
+                pts.append(q + e * math.cos(th) * half * wob - self.d * max(0.0, math.sin(th)) * deep * wob * 2
+                           + self.d * min(0.0, math.sin(th)) * .5)
+            c.poly("art", pts, g)
+            if False:                                      # (walls throw their own drop: PenVolleys)
+                for j in range(2):
                     r = self.blot[j]
-                    v = self.d * (230 + 260 * r) + np.array([0.0, (self.blot[j + 5] - .5) * 300])
+                    v = self.d * (200 + 200 * r) + np.array([0.0, (self.blot[j + 5] - .5) * 260])
                     px, py = q + v * a + np.array([0.0, 520 * a * a])
-                    c.circle("top", px, py, (3 + 3 * r) * (1 - .5 * a / .4), fade_gray(215, 1 - a / .4))
+                    c.circle("top", px, py, 2 + 1.5 * r, fade_gray(200, 1 - a / .3))
 
 
 class BoneShots(Attack):
@@ -1651,16 +1658,16 @@ class PenVolleys(Attack):
                 for bone in b["bones"]:
                     bone.draw(c, t)
                     a = t - bone.t_out
-                    if 0 <= a < .45 and bone.d[0] < 0:          # splashed out past the left edge
+                    if 0 <= a < .35 and bone.d[0] < 0:          # a fine drop thrown out past the left edge
                         q = bone.S + bone.d * bone.s_out
-                        for j in range(3):
+                        for j in range(1):
                             r = self.jit[(int(q[1]) * 3 + j * 37) % 400]
                             r2 = self.jit[(int(q[1]) * 7 + j * 53 + 11) % 400]
                             vx = -330 - 640 * (r - .7)                # flung out hard...
                             vy = (r2 - 1) * 430 + (j - 1) * 70        # ...and fanned up and down
                             px = self.g.x - 14 + vx * a
                             py = q[1] + vy * a + 650 * a * a
-                            c.circle("top", px, py, (3 + 3 * r) * (1 - .4 * a / .45), fade_gray(225, 1 - a / .45))
+                            c.circle("top", px, py, 2 + 1.5 * r, fade_gray(210, 1 - a / .35))
 
 
 class PaperRun(Attack):
@@ -3741,31 +3748,69 @@ class HuntingInk(Attack):
         x, y = self.pos_after(k, t)
         a = t - d["tc"]
         flying = t >= d["L"]
-        size = 24.0
+        # velocity (for the stretch and the trail)
+        px, py = self.pos_after(k, max(d["tc"], t - 1 / 120))
+        vx, vy = (x - px) * 120, (y - py) * 120
+        sp = math.hypot(vx, vy)
+        R = 8.0
         if a < .15:                                        # it flinches at the cut - only nicked
-            size *= 1 - .2 * math.sin(math.pi * a / .15)
-        if 0 <= t - d["L"] < .12:                          # ...and swells as it sets off
-            size *= 1 + .25 * (1 - (t - d["L"]) / .12)
-        # its trail of ink: a long one as it flies at the soul, a short one as it circles
-        n_tr, dt_tr = (12, .016) if flying else (5, .02)
-        for j in range(n_tr, 0, -1):
-            tj = t - j * dt_tr
-            if tj < d["tc"]:
-                continue
-            qx, qy = self.pos_after(k, tj)
-            f = 1 - j / (n_tr + 1)
-            c.circle("top", qx, qy, size * (.25 + .6 * f), fade_gray(215 if flying else 150, f))
-        c.circle("top", x, y, size + 6, 1)                 # a rim of paper: it reads over the HUD
-        c.circle("top", x, y, size, 245)
-        # nicked, not broken: a thin split across it, a chip out of its rim
-        c.line("top", [(x + 2 + self.slash_dx[k] * .6, y - 9), (x - 2 + self.slash_dx[k] * .6, y + 9)], 2, 1)
-        c.circle("top", x + 9, y - 7, 5, 1)
+            R *= 1 - .22 * math.sin(math.pi * a / .15)
+        if 0 <= t - d["L"] < .1:                           # ...and gathers itself as it sets off
+            R *= 1 + .3 * math.sin(math.pi * (t - d["L"]) / .1)
+        # its trail: a tapering line of wet ink along where it has been
+        n_tr, dt_tr = (14, .012) if flying else (6, .016)
+        trail = [self.pos_after(k, max(d["tc"], t - j * dt_tr)) for j in range(n_tr + 1)]
+        for j in range(n_tr):
+            f = 1 - j / n_tr
+            w = (2 * R * .8) * f ** 1.4
+            if w < 1:
+                break
+            c.line("top", [tuple(trail[j]), tuple(trail[j + 1])], w + 3, 1)             # (paper rim)
+        for j in range(n_tr):
+            f = 1 - j / n_tr
+            w = (2 * R * .8) * f ** 1.4
+            if w < 1:
+                break
+            c.line("top", [tuple(trail[j]), tuple(trail[j + 1])], w, fade_gray(245, .55 + .45 * f))
+        if flying:                                         # beads of ink it sheds as it flies
+            for j in range(4):
+                ts_ = d["L"] + .05 + .07 * j + .02 * self.spl[k][j % 5][0]
+                age = t - ts_
+                if 0 <= age < .3:
+                    bx, by = self.pos_after(k, ts_)
+                    r1, r2, r3 = self.spl[k][j % 5]
+                    bx += (r1 - .5) * 10 * (1 + age * 4)
+                    by += (r2 - .5) * 10 * (1 + age * 4) + 40 * age * age
+                    c.circle("top", bx, by, (2.5 + 2 * r3) * (1 - age / .3), fade_gray(240, 1 - age / .3))
+        # the drop itself: a living blob of ink - its outline always slowly moving,
+        # drawn out into a teardrop along its flight (round head, pointed tail)
+        ux, uy = (vx / sp, vy / sp) if sp > 1 else (1.0, 0.0)
+        stretch = min(2.2, sp / 260.0)
+        ph = self.spl[k][0][0] * 6
+        pts_rim, pts = [], []
+        for j in range(24):
+            th = j / 24 * math.tau
+            cx_, cy_ = math.cos(th), math.sin(th)
+            r = R * (1 + .16 * math.sin(3 * th + t * 7 + ph) + .09 * math.sin(5 * th - t * 11 + 2 * ph))
+            along = cx_ * ux + cy_ * uy                    # +1: head, -1: tail
+            if along < 0:
+                r *= 1 + stretch * (-along) ** 2.2
+            else:
+                r *= 1 - .12 * stretch * along
+            if a < .6 and abs(th - (1.0 + ph) % math.tau) < .35:   # the nick: a little bite out of its rim
+                r *= .62
+            pts.append((x + cx_ * r, y + cy_ * r))
+            pts_rim.append((x + cx_ * (r + 2.5), y + cy_ * (r + 2.5)))
+        c.poly("top", pts_rim, 1)                          # a rim of paper: it reads over the HUD
+        c.poly("top", pts, 245)
+        gx, gy = x - ux * R * .2 - R * .32, y - uy * R * .2 - R * .38       # a wet glint
+        c.circle("top", gx, gy, max(2.0, R * .45), 150)
         if a < .3:                                         # the few chips the cut knocked off
             for r1, r2, r3 in self.spl[k]:
                 q = a / .3
                 ang = (r1 - .5) * 2.2 + (math.pi * .25 if r2 > .5 else -math.pi * .75)
-                dd = 6 + 30 * out_cubic(q) * (.5 + r3)
-                c.circle("top", x + math.cos(ang) * dd, y + math.sin(ang) * dd + 30 * q * q, 2 + 2 * r3,
+                dd = 6 + 26 * out_cubic(q) * (.5 + r3)
+                c.circle("top", x + math.cos(ang) * dd, y + math.sin(ang) * dd + 30 * q * q, 1.5 + 1.5 * r3,
                          fade_gray(230, 1 - q))
             spr = self.slash(min(5, int(a / .05)))
             c.sprites.append((spr, int(x - spr.w / 2 + self.slash_dx[k]), int(y - spr.h / 2), 1.0, None))
