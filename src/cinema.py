@@ -57,10 +57,22 @@ def _tunnel_push(z0=1.08, n=14):
     return out
 
 
+CLIMAX_ZOOM = (tm(C.CORE_M[0]), tm(C.CORE_M[-1] + 1.125), 1.08)   # it creeps in through the climax
+
+
+def _climax_zoom(t):
+    t0, t1, z = CLIMAX_ZOOM
+    return 1 + (z - 1) * smooth(clamp((t - t0) / (t1 - t0)))
+
+
 def _sink_focus(t):
-    """The descent: the camera leans a quarter of the way after the sliding arena."""
-    dx, dy, _, _ = C.arena_state(t)
-    return (320 + .25 * dx, 290 + .2 * dy)
+    """The descent: the camera leans a little after the sheet - where it is on
+    screen, folded or not - more as it creeps in on the climax, so the sheet stays
+    in shot."""
+    z = _climax_zoom(t)
+    k = .12 + 3.0 * (z - 1)
+    cx, cy = C.sheet_centre(t)
+    return (320 + k * (cx - 320), 240 + k * (cy - 240))
 
 
 KEYS = [
@@ -117,13 +129,22 @@ KEYS = [
     dict(t=tm(26.5), focus=(245, 335), zoom=1.16, pitch=0, yaw=0, roll=0),
     dict(t=C.PRESS_T - .1, focus=(204, 404), zoom=1.36, pitch=0, yaw=0, roll=0),
     dict(t=C.PRESS_T, focus=(170, 430), zoom=1.7, pitch=0, yaw=0, roll=0, ease="in"),
-    dict(t=C.PRESS_T + .2, focus=(168, 432), zoom=1.74, pitch=0, yaw=0, roll=0, ease="linear"),
-    dict(t=tm(28.5), focus=(320, 240), zoom=1.0, pitch=0, yaw=0, roll=0, ease="smooth"),   # (no jolt as it starts)
+    dict(t=C.PRESS_T + .1, focus=(168, 432), zoom=1.74, pitch=0, yaw=0, roll=0, ease="linear"),
+    # the cut ink is knocked out wide round the soul (laid out on screen: the pull-back
+    # does not eat it up - attacks.HuntingInk): pull back
+    # and follow the soul, framing it left of the middle and a little down so there
+    # is room all round the ring (the sheet runs on past the screen); back to the
+    # middle as the last drop is smashed, for the ink over Ink Sans
+    dict(t=tm(28.5), focus=C.swirl_focus, zoom=1.0, pitch=0, yaw=0, roll=0, ease="smooth"),
+    dict(t=C.CONFIRMS[-1], focus=C.SWIRL_FOCUS, zoom=1.0, pitch=0, yaw=0, roll=0),
+    dict(t=tm(31), focus=(320, 240), zoom=1.0, pitch=0, yaw=0, roll=0, ease="smooth"),
     # the descent: a slight lean down as we sink, then after the arena
     dict(t=C.RISE[0], focus=(320, 240), zoom=1.0, pitch=0, yaw=0, roll=0),
-    dict(t=C.ARRIVE - .05, focus=(320, 270), zoom=1.05, pitch=-5, yaw=0, roll=0, ease="smooth"),
-    dict(t=C.ARRIVE + .3, focus=lambda t: _sink_focus(t), zoom=1.08, pitch=0, yaw=0, roll=0, ease="out"),
-    dict(t=C.NEW_END - .2, focus=lambda t: _sink_focus(t), zoom=1.08, pitch=0, yaw=0, roll=0, ease="linear"),
+    dict(t=C.ARRIVE - .05, focus=(320, 240), zoom=1.0, pitch=-4, yaw=0, roll=0, ease="smooth"),
+    dict(t=C.ARRIVE + .3, focus=lambda t: _sink_focus(t), zoom=1.0, pitch=0, yaw=0, roll=0, ease="out"),
+    dict(t=CLIMAX_ZOOM[0], focus=lambda t: _sink_focus(t), zoom=1.0, pitch=0, yaw=0, roll=0, ease="linear"),
+    dict(t=CLIMAX_ZOOM[1], focus=lambda t: _sink_focus(t), zoom=CLIMAX_ZOOM[2], pitch=0, yaw=0, roll=0, ease="smooth"),
+    dict(t=C.NEW_END - .2, focus=lambda t: _sink_focus(t), zoom=CLIMAX_ZOOM[2], pitch=0, yaw=0, roll=0, ease="linear"),
 ]
 
 KICKS = [dict(t=CORNERS[4], zoom=.02, decay=14)]
@@ -158,9 +179,6 @@ KICKS.append(dict(t=tm(20.75) + .14, zoom=.05, roll=-3, decay=10))     # the sha
 for n in _notes:
     if tm(17) - 1e-3 <= n.t < tm(24) - 1e-3 and n.group_size > 1:
         KICKS.append(dict(t=n.t, zoom=.022, decay=16))
-for n in _notes:                                     # the descent: pairs kick, so does every piston stab
-    if C.ARRIVE + .05 <= n.t < tm(47) - 1e-3 and n.group_size > 1 and not n.brk:
-        KICKS.append(dict(t=n.t, zoom=.02, roll=.8 * (1 if int(n.t * 100) % 2 else -1), decay=16))
 KICKS.append(dict(t=tm(24.75), zoom=-.12, roll=-3, decay=7))
 
 INVERT = [(t, 1 / 60) for t in SIXTEENTHS] + [(DOWNBEAT, 2 / 60)]
@@ -170,16 +188,12 @@ GLITCH = [(SIXTEENTHS[3], .06, .8), (SIXTEENTHS[6], .06, 1.0), (DOWNBEAT, .09, 1
 INVERT.append((tm(24.75), 1 / 60))
 for t in C.CONFIRMS:                                 # each confirmed bar smashes a drop
     KICKS.append(dict(t=t, zoom=.03, roll=1.0, decay=16))
+KICKS.append(dict(t=C.KNOCK_T, zoom=.05, roll=-2, decay=11))   # the blow knocks the cut ring out
 KICKS.append(dict(t=C.AIM_OPEN, zoom=.04, decay=12))   # FIGHT: the aim meter comes up
 for t in C.CURTAIN_CUTS:                             # every piece of the ink over him cut away
     KICKS.append(dict(t=t, zoom=.015, roll=.6 * (1 if int(t * 1000) % 2 else -1), decay=18))
 KICKS.append(dict(t=C.REVEAL, zoom=-.05, pitch=-2, decay=8))   # the last of the ink is gone: he is there
-for j in range(4):                                   # the 5-4-5-4: the piece is torn out, a side a note
-    KICKS.append(dict(t=C.SINK0 + j * C.MEAS / 16, zoom=.02, pitch=-2.5, decay=14))
-KICKS.append(dict(t=C.ARRIVE, zoom=.07, pitch=4, decay=9))   # it lands
-for t in (tm(38.875), tm(47)):                       # the breaks: the arena snaps into a new shape
-    KICKS.append(dict(t=t, zoom=-.08, roll=2.5, decay=8))
-    GLITCH.append((t, .06, .9))
+# (the descent: no jolts, shakes or glitches - the user would have none of it)
 
 # triplet run (M15): every note kicks the camera, every triplet group flashes
 TRIPLETS = _times(15, 16)

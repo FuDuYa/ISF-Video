@@ -339,10 +339,13 @@ def sink_paper(t, box, XX, YY, EDGE):
         r = (x0, y0 + drop, x1, y1 + drop)
     elif t < C.ARRIVE:
         u = smooth((t - C.RISE[0]) / (C.ARRIVE - C.RISE[0]))
-        drop = 12
+        drop = 24
         r = [a + (b_ - a) * u for a, b_ in zip((x0, y0 + drop, x1, y1), (x, y, x + w, y + h))]
     else:
         r = (x, y, x + w, y + h)
+    if t >= C.RISE[0]:                                       # (it runs on past the top and bottom of the screen)
+        r = (r[0], r[1] - 14 * smooth((t - C.RISE[0]) / (C.ARRIVE - C.RISE[0])), r[2],
+             r[3] + 14 * smooth((t - C.RISE[0]) / (C.ARRIVE - C.RISE[0])))
     d = np.maximum(np.maximum(r[0] - XX, XX - r[2]), np.maximum(r[1] - YY, YY - r[3]))
     ragged = d - EDGE * 4
     paper = ragged < 0
@@ -465,6 +468,27 @@ def compose(t: float, tl, soul_xy, hp: int, soul_visible: bool = True) -> np.nda
         # once the paper has spread, the sheet runs on past the screen (and the
         # living ink may circle out there): give the camera that bigger picture
         plane = overscan(frame, t, tl, box)
+        if C.SINK0 <= t < C.NEW_END:                      # the page's folds (choreo.sheet_state)
+            M_, b_, fold = C.sheet_state(t)
+            if fold is not None or not (np.array_equal(M_, np.eye(2)) and np.allclose(b_, 0)):
+                import fx
+                plane = fx.sheet_fold(plane, M_, b_, fold, fx_pad())
+            pg = C.pack_geometry(t)
+            if pg is not None:                                # (M38: folded up round the soul, hopping off)
+                import fx
+                ghosts = []
+                if C.PACK_HOPS[0] - (C.PACK_HOPS[1] - C.PACK_HOPS[0]) <= t < C.PACK_HOPS[-1]:
+                    ghosts = [(C.pack_geometry(t - .014 * k), .5 - .14 * k) for k in (3, 2, 1)]
+                plane = fx.paper_pack(plane, pg, fx_pad(), ghosts=[g for g in ghosts if g[0] is not None])
+            knocks = []
+            for j, (tk, pw) in enumerate(C.PACK_KNOCKS):         # (the packet landing hard: ink thrown off)
+                gk = C.pack_geometry(tk) if 0 <= t - tk < .3 else None
+                if gk is not None:
+                    qs = np.concatenate([g[0] for g in gk[0]])
+                    knocks.append((t - tk, (*qs.min(0), *qs.max(0)), pw, 3800 + j))
+            if knocks:
+                import fx
+                plane = fx.pack_bursts(plane, knocks, fx_pad())
         if dx or dy:
             plane = shift(plane, dx, dy)
         LAST_PLANE = (t, plane)
@@ -491,6 +515,7 @@ class PlaneCtx:
         self.top = Image.new("L", size)
         self.d = ImageDraw.Draw(self.top)
         self.sprites = []
+        self.ox = self.oy = 0.0           # (attacks.ArenaFrame: everything on the moving arena)
 
     def _ok(self, layer):
         return layer == "top"
@@ -498,24 +523,26 @@ class PlaneCtx:
     def circle(self, layer, x, y, size, fill):
         if self._ok(layer):
             r = max(size, 1.0) / 2
-            x, y = x + self.P, y + self.P
+            x, y = x + self.ox + self.P, y + self.oy + self.P
             self.d.ellipse((x - r, y - r, x + r - .01, y + r - .01), fill=fill)
 
     def line(self, layer, pts, width, fill):
         if self._ok(layer):
-            self.d.line([(px + self.P, py + self.P) for px, py in pts], fill=fill, width=max(1, int(round(width))))
+            self.d.line([(px + self.ox + self.P, py + self.oy + self.P) for px, py in pts], fill=fill,
+                        width=max(1, int(round(width))))
 
     def poly(self, layer, pts, fill):
         if self._ok(layer):
-            self.d.polygon([(px + self.P, py + self.P) for px, py in pts], fill=fill)
+            self.d.polygon([(px + self.ox + self.P, py + self.oy + self.P) for px, py in pts], fill=fill)
 
     def rect(self, layer, x0, y0, x1, y1, fill):
         if self._ok(layer):
-            self.d.rectangle((x0 + self.P, y0 + self.P, x1 + self.P - .01, y1 + self.P - .01), fill=fill)
+            x0, x1, y0, y1 = x0 + self.ox + self.P, x1 + self.ox + self.P, y0 + self.oy + self.P, y1 + self.oy + self.P
+            self.d.rectangle((x0, y0, x1 - .01, y1 - .01), fill=fill)
 
     def ring(self, layer, x, y, r, width, fill):
         if self._ok(layer):
-            x, y = x + self.P, y + self.P
+            x, y = x + self.ox + self.P, y + self.oy + self.P
             self.d.ellipse((x - r, y - r, x + r, y + r), outline=fill, width=max(1, int(round(width))))
 
 
@@ -539,6 +566,12 @@ def overscan(frame, t, tl, box):
     plane[paper] = tex[paper]
     if rim is not None:
         plane[rim] = np.minimum(plane[rim], 186)
+    if C.SINK0 <= t < C.NEW_END:                             # (the descent: the arena's ink is drawn on the
+        ext = np.pad(frame, P, mode="edge")                  # screen only - where its sheet's ragged edge
+        near = np.zeros((Hp, Wp), bool)                      # pokes past the screen, carry the ink on, or the
+        near[:, P - 8:P] = near[:, P + W:P + W + 8] = True   # camera's sway shows a white fringe of bare paper)
+        near &= paper
+        plane[near] = ext[near]
     pc = PlaneCtx(t, P, (Wp, Hp))
     for a in tl.active(t):
         if getattr(a, "overscan", False):

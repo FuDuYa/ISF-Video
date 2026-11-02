@@ -22,6 +22,9 @@ from PIL import Image
 import choreo as C
 import cinema
 import intro as I
+import plunge
+import bga
+import dive
 import scene as S
 from common import ROOT, FPS, W, H, smooth
 
@@ -67,6 +70,12 @@ def frame(i: int) -> np.ndarray:
     t = i / FPS
     if t < I.INTRO_END:
         out = _state["intro"].frame(t)
+    elif dive.active(t):                     # (under it, going up fast: 3D, a run of games; out on the chorus)
+        out = dive.frame(t)
+    elif bga.active(t):                      # (the rest under it, calm; dissolving in from under the surface)
+        out = bga.frame(t)
+    elif plunge.active(t):                   # (the end of the descent: down into the ink, in 3D)
+        out = plunge.frame(t, _state["tl"], soul_at)
     else:
         pos, hp, vis = soul_at(i)
         out = S.compose(t, _state["tl"], pos, hp, vis)
@@ -77,9 +86,16 @@ def frame(i: int) -> np.ndarray:
     return out
 
 
+def frame_rgb(i: int) -> np.ndarray:
+    """The frame as RGB (all grey but for the red that comes out of the soul at M54)."""
+    out = frame(i)
+    return out if out.ndim == 3 else np.repeat(out[..., None], 3, 2)
+
+
 def to_1080(img: np.ndarray) -> Image.Image:
-    full = Image.new("L", (1920, 1080))
-    full.paste(Image.fromarray(img).resize((1440, 1080), Image.Resampling.NEAREST), (240, 0))
+    im = Image.fromarray(img)
+    full = Image.new(im.mode, (1920, 1080))
+    full.paste(im.resize((1440, 1080), Image.Resampling.NEAREST), (240, 0))
     return full
 
 
@@ -101,7 +117,7 @@ def render_video(out: Path, start: float, end: float, workers: int):
     f0, f1 = int(round(start * FPS)), int(math.ceil(end * FPS))
     out.parent.mkdir(parents=True, exist_ok=True)
     cmd = [exe, "-hide_banner", "-loglevel", "error", "-y",
-           "-f", "rawvideo", "-pixel_format", "gray", "-video_size", f"{W}x{H}",
+           "-f", "rawvideo", "-pixel_format", "rgb24", "-video_size", f"{W}x{H}",
            "-framerate", str(FPS), "-i", "pipe:0",
            "-ss", f"{start:.4f}", "-i", str(ROOT / "Music" / "Larva.mp3"),
            "-map", "0:v:0", "-map", "1:a:0", "-t", f"{(f1 - f0) / FPS:.4f}",
@@ -111,7 +127,7 @@ def render_video(out: Path, start: float, end: float, workers: int):
     t0 = time.time()
     with subprocess.Popen(cmd, stdin=subprocess.PIPE) as enc:
         with mp.Pool(workers, initializer=init) as pool:
-            for k, img in enumerate(pool.imap(frame, range(f0, f1), chunksize=24)):
+            for k, img in enumerate(pool.imap(frame_rgb, range(f0, f1), chunksize=24)):
                 enc.stdin.write(img.tobytes())
                 if k % (FPS * 10) == 0:
                     print(f"  {(f0 + k) / FPS:6.1f}s  ({time.time() - t0:.0f}s elapsed)", flush=True)
@@ -130,7 +146,7 @@ def sheet(times, path: Path, scale=2):
     canvas = np.full((rows * (th + 4), cols * (tw + 4)), 40, np.uint8)
     for i, tile in enumerate(tiles):
         r, c = divmod(i, cols)
-        small = np.asarray(Image.fromarray(tile).resize((tw, th), Image.Resampling.NEAREST))
+        small = np.asarray(Image.fromarray(tile).convert("L").resize((tw, th), Image.Resampling.NEAREST))
         canvas[r * (th + 4):r * (th + 4) + th, c * (tw + 4):c * (tw + 4) + tw] = small
     Image.fromarray(canvas).save(path)
     print(f"saved {path}")

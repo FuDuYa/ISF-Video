@@ -91,6 +91,14 @@ class Ctx:
             self._pm = S.paper_mask(self.t, self.box)[0][::self.k, ::self.k]
         return self._pm
 
+    def patch(self, layer, x0, y0, vals):
+        """Paint a block of values (at this layer's resolution; 0 leaves the layer as
+        it is) with its top left at world (x0, y0)."""
+        k = self.k
+        img = Image.fromarray(np.ascontiguousarray(vals, np.uint8))
+        getattr(self, layer).paste(img, (int(round((x0 + self.ox) / k)), int(round((y0 + self.oy) / k))),
+                                   img.point(lambda v: 255 if v else 0))
+
     def layer(self, name) -> np.ndarray:
         """A layer at full resolution (640x480)."""
         a = np.asarray(getattr(self, name))
@@ -1276,7 +1284,7 @@ class InkStroke(Attack):
             u = (t - live_until) / self.dry
             if u >= 1:
                 return
-            val = int(200 * (1 - smooth(u)))
+            val = int(175 * (1 - smooth(u)))                    # (drying: never as black as when it hurt)
             live = False
         thin = 1.0 if live else 1 - .6 * smooth((t - live_until) / self.dry)
         for i in range(m - 1):
@@ -1285,8 +1293,9 @@ class InkStroke(Attack):
             w = self.w[i] * thin
             c.line("art", [self.p[i], self.p[i + 1]], w, val)
             c.circle("art", self.p[i][0], self.p[i][1], w, val)
-            if live and w > 3:
+            if live:                                             # (all of the black hurts)
                 c.line("haz", [self.p[i], self.p[i + 1]], w, 255)
+                c.circle("haz", self.p[i][0], self.p[i][1], w, 255)
         if t - self.th < .12:                                    # pale splatter where the brush lands
             a = (t - self.th) / .12
             for sx, sy, sr in self.splat:
@@ -3644,15 +3653,17 @@ class ArenaFrame(Attack):
         self.t0 = min(a.t0 for a in self.attacks)
         self.t1 = max(a.t1 for a in self.attacks)
         self.impact = None
+        self.overscan = any(getattr(a, "overscan", False) for a in self.attacks)
 
     def draw(self, c):
         t = c.t
         ox, oy = self.offset(t)
         c.ox, c.oy = ox, oy
         n0 = len(c.sprites)
+        plane = hasattr(c, "P")                            # (scene.overscan: only what reaches past the screen)
         try:
             for a in self.attacks:
-                if a.t0 <= t <= a.t1:
+                if a.t0 <= t <= a.t1 and (not plane or getattr(a, "overscan", False)):
                     a.draw(c)
         finally:
             c.ox = c.oy = 0.0
@@ -3660,6 +3671,1528 @@ class ArenaFrame(Attack):
             for i in range(n0, len(c.sprites)):
                 spr, x, y, g, m = c.sprites[i]
                 c.sprites[i] = (spr, x + ox, y + oy, g, m)
+
+
+class SloshWave(Attack):
+    """The ink on the band, thrown across it by the band's own moves (the descent):
+    a wall of ink, the height of the paper, with one gap in it, that sloshes from
+    one edge to the other a step at a time - a step on each note. Before it goes it
+    lies pooled against the edge it starts from, pale (harmless), the gap already
+    showing; then it is black and it hits. At the far edge it breaks and pools
+    again (pale), ready for the next one. Or (outside) it does not pool: it comes in
+    out of the dark past the edge - white off the paper, gliding in faster and
+    faster - and slams onto it black (one after another, close: a stream of them).
+    rect: the paper's interior in the arena's own frame; way: +1 sloshes right."""
+
+    TH = 20             # px: the wall's thickness
+    GAP = 40            # px: the gap
+    z = .5              # (over the folds' marks: its gap wipes them too)
+    STEP = .05          # s each step takes
+
+    def __init__(self, rect, way, t_pool, steps, gap_y, gap_from=None, seed=0, dry=1.0, gap=None,
+                 outside=False, hz=2.0, linger=1.0, under=False):
+        self.x0, self.y0, self.x1, self.y1 = rect
+        self.way, self.tp, self.steps = way, t_pool, list(steps)
+        self.dry = dry                                     # x how fast its mark dries (close behind each other: faster)
+        self.G = self.GAP if gap is None else gap
+        self.outside = outside
+        self.hz = hz                                       # px its harm is inset from the black (0: exactly the black)
+        self.linger = linger                               # x how much longer its dried streaks stay than dry says
+        self.under = under                                 # pooled: drawn only where the paper is not black
+        self.gy, self.gy0 = gap_y, gap_y if gap_from is None else gap_from
+        rng = np.random.default_rng(seed)
+        self.ph = rng.uniform(0, math.tau, 4)
+        self.drops = rng.uniform(0, 1, (len(self.steps), 4, 3))
+        self.t0, self.t1 = t_pool, self.steps[-1] + STAIN_GONE * linger / dry + .05
+        self.impact = None
+
+    def reach(self, t):
+        """How far the wall's front is from the edge it starts from (px)."""
+        W = self.x1 - self.x0
+        if t < self.steps[0]:
+            return self.TH * smooth(clamp((t - self.tp) / max(.05, self.steps[0] - self.tp)))
+        n = len(self.steps)
+        d = self.TH
+        for k in range(1, n):
+            if t < self.steps[k]:
+                break
+            e = 1 - (1 - clamp((t - self.steps[k]) / self.STEP)) ** 3
+            d = self.TH + (W - self.TH) * ((k - 1) + e) / (n - 1)
+        return d
+
+    def gap(self, t):
+        u = smooth(clamp((t - self.tp) / max(.05, self.steps[0] - self.tp)))
+        return self.gy0 + (self.gy - self.gy0) * u
+
+    def wall(self, c, t, d, val, layer, inset=0.0, free=False):
+        """The wall (front d from the start edge), minus its gap, as polygons (free: as it
+        is, wherever it is - off the paper too)."""
+        gy, g = self.gap(t), self.G / 2 + inset
+        for ya, yb in ((self.y0 - 18, gy - g), (gy + g, self.y1 + 18)):
+            if yb - ya < 1:
+                continue
+            pts_f, pts_b = [], []
+            for j in range(9):
+                y = ya + (yb - ya) * j / 8
+                wob = 3 * math.sin(y * .09 + t * 9 + self.ph[0]) + 2 * math.sin(y * .23 - t * 13 + self.ph[1])
+                front = d + (wob if layer != "haz" or self.hz == 0 else 0) - inset   # (hz 0: its harm wobbles too)
+                if free:
+                    back = d - self.TH - 4 * abs(math.sin(y * .05 + self.ph[2]))
+                else:
+                    if d >= self.x1 - self.x0 - .5:        # (at the far edge: right over it)
+                        front += 18
+                    back = max(0.0, d - self.TH - 4 * abs(math.sin(y * .05 + self.ph[2]))) + inset
+                    if back <= inset + .5:                 # (at the edge it starts from: over it too)
+                        back = -18 + inset
+                xf = self.x0 + front if self.way > 0 else self.x1 - front
+                xb = self.x0 + back if self.way > 0 else self.x1 - back
+                pts_f.append((xf, y))
+                pts_b.append((xb, y))
+            c.poly(layer, pts_f + pts_b[::-1], val)
+
+    def mark(self, c, t, d):
+        """Where it has been: the stretch it swept stays inked - pure black where it has
+        just passed (and that hurts), then a trailing stain drying off behind it, the
+        old end first - the track of its gap left white (the soul came through there)."""
+        back = d - self.TH
+        if d >= self.x1 - self.x0 - .5:                    # (it has hit the far edge: the mark runs over it)
+            back = d + 18
+        if t > self.steps[-1] + STAIN_GONE * self.linger / self.dry or back < 2:
+            return
+        gy, h = self.gap(t), self.G / 2
+        n = len(self.steps)                                # when its back passed each spot - spread evenly
+        backs = (self.x1 - self.x0 - self.TH) * np.arange(n) / max(1, n - 1)   # between the steps, so the mark
+                                                           # darkens smoothly towards the wall, never in bands
+        def ages(xs):
+            q = (xs - self.x0) if self.way > 0 else (self.x1 - xs)
+            return np.maximum(0.0, t - np.interp(q, backs, self.steps)) * self.dry
+
+        xa, xb = (self.x0 - 18, self.x0 + back) if self.way > 0 else (self.x1 - back, self.x1 + 18)
+        paint_stain(c, xa, self.y0 - 18, xb, self.y1 + 18, ages, skip=(gy - h, gy + h), way=self.way,
+                    linger=self.linger)
+
+    def draw(self, c):
+        t = c.t
+        last = self.steps[-1]
+        if t >= self.steps[0]:
+            self.mark(c, t, min(self.reach(t), self.x1 - self.x0))
+        if t < self.steps[0] and self.outside:            # coming in out of the dark: white off the paper
+            u = clamp((t - self.tp) / max(.05, self.steps[0] - self.tp))
+            flick = .7 + .3 * math.sin(t * 60) if u > .7 else 1.0
+            self.wall(c, t, -4 - 150 * (1 - u) ** 2, fade_gray(215 * flick, min(1.0, u * 4)), "top", free=True)
+            return
+        if t < self.steps[0]:                              # pooled at its edge: pale, the gap showing
+            d = self.reach(t)
+            u = clamp((t - self.tp) / max(.05, self.steps[0] - self.tp))
+            flick = .75 + .25 * math.sin(t * 60) if u > .7 else 1.0
+            if self.under:                                 # (under whatever black is still there: never pale
+                img = Image.new("L", c.art.size)           # over ink that still hurts)
+                keep = c.d["art"]
+                c.d["art"] = ImageDraw.Draw(img)
+                try:
+                    self.wall(c, t, d, fade_gray(95 * flick, 1), "art")
+                finally:
+                    c.d["art"] = keep
+                art, pool = np.asarray(c.art), np.asarray(img)
+                c.art.paste(Image.fromarray(np.where((pool > 0) & (art < 200), np.maximum(art, pool), art)
+                                            .astype(np.uint8)))
+            else:
+                self.wall(c, t, d, fade_gray(95 * flick, 1), "art")
+            return
+        d = self.reach(t)
+        a = t - last
+        if a < .12:                                        # black: it hits (its mark follows it: self.mark)
+            self.wall(c, t, d, 255, "art")
+            self.wall(c, t, d, 255, "haz", inset=self.hz)
+        else:                                              # broken against the far edge: pale, draining off
+            g = 1 - clamp((a - .12) / .18)
+            self.wall(c, t, d * (1 - .35 * (1 - g)), fade_gray(95, g), "art")
+        for k, ts in enumerate(self.steps if not self.outside else ()):   # each step throws a few drops on
+            q = (t - ts) / .22                             # ahead (pale; not in a stream: too busy)
+            if 0 <= q < 1:
+                dk = self.TH + (self.x1 - self.x0 - self.TH) * min(len(self.steps) - 1, k) / max(1, len(self.steps) - 1)
+                for r1, r2, r3 in self.drops[k]:
+                    y = self.y0 + 8 + (self.y1 - self.y0 - 16) * r1
+                    x = dk + 8 + 34 * (1 - (1 - q) ** 2) * (.5 + r2)
+                    x = self.x0 + x if self.way > 0 else self.x1 - x
+                    c.circle("art", x, y, (3 + 3 * r3) * (1 - q), fade_gray(110, 1 - q))
+
+
+class EdgeNeedle(Attack):
+    """Ink stabbing in sideways from the band's left or right edge (the descent's
+    2-7-1-8-2-7): the edge swells there first, pale, then a needle of ink shoots in
+    on the note, holds a moment and pulls back.
+    hits: (t, side, y) in the arena's own frame; side +1: from the right edge."""
+
+    WARN = .24
+    THICK = 13
+
+    def __init__(self, rect, hits, length, seed=0):
+        self.x0, self.y0, self.x1, self.y1 = rect
+        self.hits = sorted(hits)
+        self.L = length
+        self.t0, self.t1 = self.hits[0][0] - self.WARN, self.hits[-1][0] + .3
+        self.impact = None
+
+    def draw(self, c):
+        t = c.t
+        for th, side, y in self.hits:
+            a = t - th
+            if a < -self.WARN or a > .24:
+                continue
+            ex = self.x1 if side > 0 else self.x0
+            if a < 0:                                      # the edge swells, pale
+                u = 1 + a / self.WARN
+                r = 4 + 9 * u
+                c.circle("art", ex, y, 2 * r, fade_gray(100 * (.7 + .3 * math.sin(t * 50)) if u > .6 else 100, 1))
+                continue
+            if a < .04:
+                ext = 1 - (1 - a / .04) ** 2
+            elif a < .1:
+                ext = 1.0
+            else:
+                ext = 1 - smooth((a - .1) / .14)
+            L = self.L * ext
+            if L < 2:
+                continue
+            tip = ex - side * L
+            h = self.THICK / 2
+            poly = [(ex + side * 3, y - h - 3), (ex - side * L * .25, y - h), (tip, y), (ex - side * L * .25, y + h),
+                    (ex + side * 3, y + h + 3)]
+            c.poly("art", poly, 255)
+            if ext > .25:
+                hp = [(ex, y - h + 2), (ex - side * L * .25, y - h + 2), (tip + side * 4, y),
+                      (ex - side * L * .25, y + h - 2), (ex, y + h - 2)]
+                c.poly("haz", hp, 255)
+
+
+class FoldFlap(Attack):
+    """The band folding its end under (the descent): the strip past the new edge
+    flips over onto the paper about the crease, shows its back (grey) and is gone -
+    harmless; or (slam) it slams down wet, and where it lands is inked: black (it
+    hurts) a moment, then a water stain drying."""
+
+    DUR = .1
+
+    def __init__(self, t, crease_x, width, y0, y1, slam=False, unfold=False):
+        self.tf, self.cx, self.w, self.y0, self.y1, self.slam, self.unfold = t, crease_x, width, y0, y1, slam, unfold
+        self.t0, self.t1 = t, t + self.DUR + (STAIN_GONE + .05 if slam else .08)
+        if unfold:                                         # (the other way: it opens out, landing flat)
+            self.t1 = t + self.DUR
+        self.impact = None
+
+    def draw(self, c):
+        a = c.t - self.tf
+        if a < 0 or (self.unfold and a >= self.DUR):
+            return
+        if self.slam and a >= self.DUR:                    # it slams down wet: where it lands is inked
+            age = a - self.DUR
+            if age < STAIN_GONE:
+                paint_stain(c, self.cx - self.w, self.y0 - 6, self.cx, self.y1 + 6, lambda xs: np.full(len(xs), age))
+            return
+        th = math.pi * clamp(a / self.DUR)
+        if self.unfold:
+            th = math.pi - th
+        g = 1 - clamp((a - self.DUR) / .08)
+        x = self.cx + self.w * math.cos(th)
+        lift = 10 * math.sin(th)                           # (it lifts as it turns)
+        pts = [(self.cx, self.y0), (x, self.y0 - lift), (x, self.y1 + lift), (self.cx, self.y1)]
+        if th < math.pi / 2:                               # its face, still out over the dark
+            c.poly("top", pts, fade_gray(215, g))
+        else:                                              # its back, coming down over the paper
+            c.poly("top", pts, max(1, fade_gray(70, g)))
+        c.line("top", [(self.cx, self.y0), (self.cx, self.y1)], 3, max(1, fade_gray(120, g)))
+
+
+class SpeedInk(Attack):
+    """Streaks of ink rushing up over the paper as it goes down (the descent) - the
+    battle goes on as it sinks. They are fixed in the world, so as the paper whips
+    from side to side under them they smear out along its move (each streak is where
+    its bit of the world has been over the last moment, seen from the paper). On the
+    paper only ("art"), and pale to mid grey - never black: harmless."""
+
+    z = -1
+    V = 1050.0          # px/s up the screen (each its own speed round this: some nearer, some further)
+    N = 48              # streaks at a time
+    MARGIN = 260        # px above / below the screen they run on through
+    SMEAR = 200.0       # px: the longest a whip smears one out sideways
+
+    def __init__(self, t0, t1, offset, fade=(.8, .5), seed=0):
+        self.t0, self.t1, self.offset, self.fade = t0, t1, offset, fade
+        self.seed = seed
+        self.ph = np.random.default_rng(seed).uniform(0, 1, self.N)
+        self.impact = None
+
+    def draw(self, c):
+        t = c.t
+        a = clamp((t - self.t0) / self.fade[0]) * clamp((self.t1 - t) / self.fade[1])
+        if a <= 0:
+            return
+        ox, oy = self.offset(t)
+        span = 2 * HH + 2 * self.MARGIN
+        for i in range(self.N):
+            v = self.V * (.7 + .6 * ((i * .618) % 1))
+            u = v * t + self.ph[i] * span
+            n = int(u // span)
+            y = 2 * HH + self.MARGIN - (u - n * span)          # its head (going up)
+            r = np.random.default_rng((self.seed, i, n)).uniform(0, 1, 12)
+            x = r[0] * 2 * HW
+            L = 60 + 260 * r[1] ** 1.5                     # px it is long while the paper is still
+            if r[2] < .1:                                  # a broad, pale wash of the brush
+                g, wd = (28 + 22 * r[3]) * a, 7 + 4 * r[4]
+            elif r[2] < .45:                               # darker (still only mid grey)
+                g, wd = (90 + 50 * r[3]) * a, 3 + 2.5 * r[4] ** 2
+            else:
+                g, wd = (40 + 40 * r[3]) * a, 2 + 2.5 * r[4] ** 2
+            o2 = self.offset(t - L / v)                    # where the paper was then: the smear
+            sx, sy = ox - o2[0], oy - o2[1]
+            m = math.hypot(sx, sy)
+            if m > self.SMEAR:
+                sx, sy = sx * self.SMEAR / m, sy * self.SMEAR / m
+            tx, ty = x + sx, y + L + sy                   # its tail
+            if max(y, ty) < -10 or min(y, ty) > 2 * HH + 10:
+                continue
+            k = 6                                         # dry-brushed: a few breaks, thinning to the tail
+            for j in range(k):
+                if j and r[5 + j] < .22:
+                    continue
+                f0, f1 = j / k, (j + .82) / k
+                w = wd * (1 - f0) ** .7
+                if w < 1:
+                    break
+                c.line("art", [(x + (tx - x) * f0, y + (ty - y) * f0), (x + (tx - x) * f1, y + (ty - y) * f1)],
+                       w, int(g * (1 - .45 * f0)))
+
+
+def ink_drop(c, x, y, ang, r, val=245, haz=True, exact=False):
+    """A drop of ink flying along ang: a round head and a pointed tail behind it
+    (black, harmful unless haz is False; exact: all of the black hurts, its tail too)."""
+    ux, uy = math.cos(ang), math.sin(ang)
+    tail = [(x - ux * r * 2.8, y - uy * r * 2.8), (x - uy * r * .92, y + ux * r * .92),
+            (x + uy * r * .92, y - ux * r * .92)]
+    c.poly("top", tail, val)
+    c.circle("top", x, y, 2 * r, val)
+    if haz:
+        c.circle("haz", x, y, 2 * r if exact else 2 * r - 2, 255)
+        if exact:
+            c.poly("haz", tail, 255)
+
+
+class InkBlot(Attack):
+    """A blot of ink stamped onto the sheet: the spot shows first, plain to see - a
+    solid pale disc with a darker rim, flickering at the last - and on the note it
+    is slammed down black (harmful); then it stays, a mark - black a moment longer
+    (still harmful), drying pale. In the
+    arena's own frame."""
+
+    HOLD = .15
+
+    def __init__(self, t_hit, xy, r=28.0, pre=.3, stain_until=None, seed=0):
+        rng = np.random.default_rng(seed)
+        self.th, self.xy, self.r, self.pre = t_hit, np.asarray(xy, float), r, pre
+        self.jag = rng.uniform(0, 1, 18)
+        self.spl = rng.uniform(0, 1, (6, 3))
+        self.stain_until = stain_until if stain_until is not None else t_hit + 1.5
+        self.t0, self.t1 = t_hit - pre, self.stain_until + .3
+        self.impact = None
+
+    def draw(self, c):
+        t = c.t
+        x, y = self.xy
+        a = t - self.th
+        if a < 0:
+            g = clamp((a + self.pre) / .08)
+            late = a > -.1 and int(t * 60) % 4 < 2
+            c.poly("art", jagged_circle(x, y, self.r, self.jag, 18), fade_gray(120 if late else 70, g))
+            c.ring("art", x, y, self.r + 3, 3, fade_gray(150, g))
+            return
+        if a < self.HOLD:
+            sc = 1 + .12 * (1 - clamp(a / .05))
+            c.poly("art", jagged_circle(x, y, self.r * sc, self.jag, 18), 255)
+            c.poly("haz", jagged_circle(x, y, self.r - 2, self.jag, 18), 255)
+            for r1, r2, r3 in self.spl:                    # a few drops squeezed out (pale)
+                q = a / self.HOLD
+                ang = r1 * math.tau
+                d = self.r + 4 + 22 * out_cubic(q) * (.5 + r2)
+                c.circle("art", x + math.cos(ang) * d, y + math.sin(ang) * d, (3 + 3 * r3) * (1 - .5 * q), 90)
+            return
+        g = 1 - clamp((t - self.stain_until) / .3)
+        if g > 0:
+            c.poly("art", jagged_circle(x, y, self.r, self.jag, 18), fade_gray(fresh_ink(a - self.HOLD), g))
+            if fresh_hurts(a - self.HOLD):
+                c.poly("haz", jagged_circle(x, y, self.r - 2, self.jag, 18), 255)
+
+
+class InkRod(Attack):
+    """The sheet is still going down: ink in the world it falls past shoots up
+    through it - its column shows first (a solid pale band the height of the
+    sheet, flashing at the last), then a black rod of ink streaks up it (harmful),
+    its head across the sheet's middle on the note. hits: (t, x) in the arena's own
+    frame; rect: the sheet there."""
+
+    WARN = .3
+    V = 1500.0           # px/s
+    LEN = 150.0
+    W = 12.0
+
+    def __init__(self, rect, hits):
+        self.x0, self.y0, self.x1, self.y1 = rect
+        self.hits = sorted(hits)
+        self.ym = (self.y0 + self.y1) / 2
+        span = (self.y1 - self.y0) / 2 + self.LEN + 40
+        self.t0 = self.hits[0][0] - span / self.V - self.WARN
+        self.t1 = self.hits[-1][0] + span / self.V
+        self.impact = None
+
+    def draw(self, c):
+        t = c.t
+        for th, x in self.hits:
+            head = self.ym - self.V * (t - th)             # (going up)
+            t_in = th - (self.y1 + 30 - self.ym) / self.V   # its head comes in under the sheet's bottom
+            if t < t_in - self.WARN or head + self.LEN < self.y0 - 30:
+                continue
+            if t < t_in + .05:                             # its column: a solid pale band, flashing at the last
+                late = t > t_in - .1 and int(t * 60) % 4 < 2
+                g = clamp((t - t_in + self.WARN) / .06)
+                c.rect("art", x - self.W / 2, self.y0 - 10, x + self.W / 2, self.y1 + 10, fade_gray(140 if late else 80, g))
+            if head > self.y1 + 30:
+                continue
+            tail = head + self.LEN
+            hw = self.W / 2
+            c.line("art", [(x, tail), (x, tail + 90)], 3, 60)          # a pale wake
+            c.poly("art", [(x - hw, head + hw), (x - 2, tail), (x + 2, tail), (x + hw, head + hw)], 255)
+            c.circle("art", x, head + hw, self.W, 255)
+            c.poly("haz", [(x - hw, head + hw), (x - 2, tail), (x + 2, tail), (x + hw, head + hw)], 255)   # (all of
+            c.circle("haz", x, head + hw, self.W, 255)                                                  # the black)
+
+
+class InkTide(Attack):
+    """The climax's run (each bar's trill and four pairs): a tide of ink comes on
+    from one edge of the sheet and drives the soul across it, the one way. The
+    whole stretch it will cover shows from the start - a pale wash, darker and
+    darker towards where the first surge will reach, a line at each surge's front
+    (flashing just before it). On the trill it licks out from its edge, top half
+    and bottom half in turn; on each pair it surges further and slams down black
+    over everything behind its front (harmful a moment), and leaves its mark,
+    pale, till the page turns (t_end). way +1: from the left edge, driving right;
+    fronts: px from its edge each surge reaches; licks: px each lick reaches (0:
+    none). In the arena's own frame."""
+
+    HOLD = .08           # s each surge is black (four slams, the pale mark between)
+    LICK = .05           # s a lick is out, black (then it draws back: one at a time, top and bottom)
+
+    def __init__(self, rect, way, t_show, trill, pairs, fronts, licks, t_end, seed=0):
+        self.x0, self.y0, self.x1, self.y1 = rect
+        self.way, self.ts, self.trill, self.pairs = way, t_show, list(trill), list(pairs)
+        self.fronts, self.licks, self.t_end = list(fronts), list(licks), t_end
+        rng = np.random.default_rng(seed)
+        self.rag = rng.uniform(-1, 1, (len(self.pairs) + len(self.trill), 13))
+        self.spl = rng.uniform(0, 1, (len(self.pairs), 8, 3))
+        self.t0, self.t1 = t_show, t_end + .3
+        self.impact = None
+
+    def X(self, d):
+        return self.x0 + d if self.way > 0 else self.x1 - d
+
+    def slab(self, c, d, layer, val, ya, yb, k, wob=5.0, inset=0.0, tip=False):
+        """Ink from its edge out to d (a ragged front; a rounded tip for a lick)."""
+        pts = []
+        for j in range(13):
+            u = j / 12
+            yy = ya + (yb - ya) * u
+            dd = d - (abs(self.rag[k][j]) * wob if layer != "haz" else 0) - inset   # (never past its front)
+            if tip:
+                dd -= 18 * (2 * u - 1) ** 2
+            pts.append((self.X(max(0.0, dd)), yy))
+        c.poly(layer, [(self.X(-6), ya)] + pts + [(self.X(-6), yb)], val)
+
+    def draw(self, c):
+        t = c.t
+        ya, yb, ym = self.y0 - 6, self.y1 + 6, (self.y0 + self.y1) / 2
+        n = len(self.pairs)
+        done = [k for k in range(n) if t >= self.pairs[k] + self.HOLD]
+        g_end = 1 - clamp((t - self.t_end) / .3)
+        if done and g_end > 0:                             # its mark so far
+            self.slab(c, self.fronts[done[-1]], "art", fade_gray(56, g_end), ya, yb, done[-1])
+        if t < self.pairs[-1]:                             # the stretch still to come
+            g = clamp((t - self.ts) / .12)
+            for k in range(n - 1, -1, -1):
+                if t >= self.pairs[k]:
+                    continue
+                late = self.pairs[k] - t < .1 and int(t * 60) % 4 < 2
+                self.slab(c, self.fronts[k], "art", fade_gray((26 + 10 * (n - 1 - k)) * (1.8 if late else 1), g),
+                          ya, yb, k, wob=0)
+                xf = self.X(self.fronts[k])
+                c.line("art", [(xf, ya), (xf, yb)], 3, fade_gray(160 if late else 90, g))
+        for i, tt in enumerate(self.trill):                # the licks, top and bottom in turn
+            a = t - tt
+            if self.licks[i] < 12 or not (0 <= a < self.LICK + .03):
+                continue
+            ext = clamp(a / .02) if a < self.LICK else 1 - clamp((a - self.LICK) / .03)
+            y_a, y_b = (ya, ym) if i % 2 == 0 else (ym, yb)
+            self.slab(c, self.licks[i] * ext, "art", 255 if a < self.LICK else fade_gray(140, ext), y_a, y_b,
+                      n + i, tip=True)
+            if a < self.LICK and ext > .4:
+                self.slab(c, self.licks[i] * ext, "haz", 255, y_a + 2, y_b - 2, n + i, inset=4, tip=True)
+        for k, tp in enumerate(self.pairs):                # the surges
+            a = t - tp
+            if not (0 <= a < self.HOLD):
+                continue
+            self.slab(c, self.fronts[k], "art", 255, ya, yb, k)
+            self.slab(c, self.fronts[k], "haz", 255, ya, yb, k, inset=2)
+            for r1, r2, r3 in self.spl[k]:                 # ink thrown on ahead of it (pale)
+                q = a / self.HOLD
+                c.circle("art", self.X(self.fronts[k] + 6 + 30 * out_cubic(q) * (.4 + r1)),
+                         self.y0 + (self.y1 - self.y0) * r2, (3 + 3 * r3) * (1 - .5 * q), 90)
+
+
+WET = .22               # s a fresh mark of ink stays pure black
+
+
+def fresh_ink(age, life=.35):
+    """How dark a fresh mark of ink is, `age` s after it was left: pure black at
+    first - and black hurts (fresh_hurts) - then drying to a pale stain."""
+    if age < WET:
+        return 255
+    return int(60 + 195 * (1 - smooth(clamp((age - WET) / life))))
+
+
+def fresh_hurts(age):
+    """A fresh mark hurts as long as it looks black."""
+    return fresh_ink(age) >= 200
+
+
+_STAIN = None
+
+
+def stain_texture():
+    """A trailing-stain texture (made, not found): ink dragged out in streaks, as a
+    wet brush leaves it - long thin streaks along x, broken here and there - over
+    the sheet's own frame (world px, from (-20, -20)). (streaks 0..1: how dark;
+    order 0..1: how late each bit dries off - the dark streaks last)."""
+    global _STAIN
+    if _STAIN is None:
+        from scipy import ndimage as ndi
+        rng = np.random.default_rng(777)
+        H_, W_ = 540, 780
+
+        def field(sy, sx):
+            n = ndi.gaussian_filter(rng.standard_normal((H_, W_)), (sy, sx), mode="wrap")
+            return n / n.std()
+
+        f = .5 * field(.8, 45) + .35 * field(2.2, 100) + .25 * field(7, 180)   # bristles, strands, bands
+        f = np.clip((f - np.percentile(f, 8)) / (np.percentile(f, 97) - np.percentile(f, 8)), 0, 1)
+        brk = field(1.4, 16)                                 # dry-brush breaks along the streaks
+        f = f * np.clip(.35 + .65 * (brk + 1.6) / 1.8, .35, 1)
+        o = .65 * f + .35 * np.clip(field(3, 30) * .25 + .5, 0, 1)
+        _STAIN = (f, o)
+    return _STAIN
+
+
+STAIN_WET = .06          # s a mark stays pure black first (paint_stain)
+STAIN_LIFE = .26         # s it then takes to dry out into streaks
+STAIN_OFF = (.3, .14, .1)    # it dries off from this age: the pale bits first, the dark streaks up to .14 s later, each in .1 s
+STAIN_GONE = sum(STAIN_OFF)
+
+
+def paint_stain(c, x0, y0, x1, y1, ages, skip=None, g=1.0, hurt=True, way=0, linger=1.0):
+    """A wet mark of ink over x0..x1, y0..y1 (the sheet's frame), laid by something
+    sweeping across it (way: +1 it went right; 0: slapped down where it is): pure
+    black while it is fresh, then drying - smoothly, with no steps in it - into a
+    trailing stain, the streaks it was dragged out in coming up as it dries (and
+    each row of them pulled on a little further after whatever laid it, so they
+    stretch out behind it as they go), then drying off: the pale bits first, the
+    dark streaks last - from the old end of it on, so the trail thins away behind.
+    Where it still looks black (>= 200) it hurts (drawn into haz here, pixel for
+    pixel). ages(xs) -> the age of each column; skip: (ya, yb) left white."""
+    k = c.k
+    xs = np.arange(math.floor(min(x0, x1) / k) * k, max(x0, x1), k, dtype=float)
+    ys = np.arange(math.floor(y0 / k) * k, y1, k, dtype=float)
+    if len(xs) == 0 or len(ys) == 0:
+        return
+    col = np.asarray(ages(xs), float)
+    keep = col < STAIN_GONE * linger
+    if not keep.any():
+        return
+    i0, i1 = np.argmax(keep), len(keep) - np.argmax(keep[::-1])   # (only what is left of it)
+    xs, col = xs[i0:i1], col[i0:i1]
+    f, order = stain_texture()
+    age = np.broadcast_to(col[None, :], (len(ys), len(xs)))
+    u = np.clip((age - STAIN_WET) / STAIN_LIFE, 0, 1)
+    d = u * u * (3 - 2 * u)                                # 0: fresh ... 1: dry
+    X, Y = xs[None, :], ys[:, None]
+    pull = 1 + .8 * np.sin(Y * .21 + 1.7) * np.sin(Y * .047 + .4)   # (each row pulled on its own way)
+    drag = way * 46 * pull * (1 - (1 - d) ** 2)            # pulled on after it while wet, then still
+    iy = np.clip((Y + 20).astype(int), 0, f.shape[0] - 1)
+    ix = np.clip((X - drag + 20).astype(int), 0, f.shape[1] - 1)
+    F, O = f[iy, ix], order[iy, ix]
+    dry = 18 + 160 * F ** 1.3                              # the streaks: pale gaps, darker strands
+    v = 255 - (255 - dry) * d
+    a0, spread, dur = STAIN_OFF
+    off = np.clip((age / linger - a0 - spread * O) / dur, 0, 1)   # drying off (linger: x later): the pale bits first,
+    v = v * (1 - off * off * (3 - 2 * off)) + 90 * off * (1 - off) * (v > 20)    # a darker edge round what is left
+    v = np.where(v < 6, 0, np.clip(v * g, 1, 255))
+    bx, by = int(round((xs[0] + c.ox) / k)), int(round((ys[0] + c.oy) / k))
+    under = np.asarray(c.art.crop((bx, by, bx + v.shape[1], by + v.shape[0])), float)
+    v = np.maximum(v, under)                               # (over other marks: the darker shows - no seams)
+    if skip is not None:                                   # (paper: it wipes out older marks under it too -
+        band = (ys[:, None] > skip[0]) & (ys[:, None] < skip[1])     # all but what is still black: that still
+        v = np.where(band, np.where(under >= 200, under, 1), v)     # hurts, so it stays black)
+    c.patch("art", xs[0], ys[0], v)
+    if hurt and g > .99:
+        c.patch("haz", xs[0], ys[0], np.where(v >= 200, 255, 0))
+
+
+class SpikeSea(Attack):
+    """The climax's run: a sea of ink spears rising behind the soul, like jaws closing
+    on it. From the moment the round starts they are thrust in out of the dark past
+    both edges of the sheet at once (only what is on the paper shows) - and stick
+    there, side by side, the two sides' points meeting in the middle
+    (no two alike: thicker and thinner, longer and shorter points, sticking out
+    further or less, a little askew, meeting a little off the middle); everything
+    behind a front that comes on after the soul as fast as it can run. On the first
+    note all of it behind the front comes in at once, a ragged volley; then on every
+    sixteenth one more spear at the front, from the left and the right by turns, so
+    that row by row it zips shut behind the soul; what is in stays in (black,
+    harmful) till the sea goes - then they are pulled back out. Where it will reach
+    shows from the start (a light wash, a line at its farthest); a spear about to
+    come in shows pale on the paper just before, flashing at the last. hits: its
+    notes; fronts: the front's y on each; way -1: it comes up from the bottom
+    (driving the soul up). In the arena's own frame.
+    The second wave (M43-M45) brings two more things. gates: (t, y, gap's x) - on
+    the pairs and the trill's eighths a row is thrust in from both sides ahead of
+    the soul, leaving it one gap, the gaps by turns to the left and the right of
+    its way, so that it weaves as it runs. darts: the trill's notes - the spear
+    that comes in at the front on each (from the left and the right by turns, like
+    the trill's two keys) snaps its point off against the other side, and the point
+    flies at the soul like a dart (aim: where it will be), along a line that shows
+    pale first, and breaks on the next gate in its way (or the sheet's edge)."""
+
+    FLY = .06            # s from well off the sheet to in
+    FAR = 170            # px off the sheet it is shot from (its point)
+    WARN = .2
+    GONE = .12           # s they take to be pulled back out at the end
+    GATE = 40            # px: a gate's gap
+    GATE_WARN = .32      # s a gate shows before it comes in
+    DART_WARN = .3       # s a dart's line shows before it flies
+    DART_V = 650.0       # px/s
+    DART_TURN = math.radians(35)   # (no further off straight on than this)
+    DART_RANGE = 120.0   # px it flies at most before it breaks up
+    DART_MISS = 21.0     # px beside the soul it flies past (it is in a gate's gap, with no room to step aside)
+
+    def __init__(self, rect, t_show, hits, fronts, way, t_end, seed=0, gates=(), darts=(), aim=None):
+        self.x0, self.y0, self.x1, self.y1 = rect
+        self.ts, self.hits, self.fronts, self.way, self.te = t_show, list(hits), list(fronts), way, t_end
+        rng = np.random.default_rng(seed)
+        half = (self.x1 - self.x0) / 2
+        rows, y, i = [], self.y0 - 4, 0
+        ph = rng.uniform(0, math.tau)
+        while y < self.y1 + 8:
+            hs = rng.uniform(5.0, 9.0, 2)                  # half thicknesses (left, right)
+            d = 22 * math.sin(i * .8 + ph) + rng.uniform(-10, 10)   # where the points meet, off the middle
+            rows.append((y, hs, d))
+            y += hs.max() * 2 + rng.uniform(3.0, 5.0)
+            i += 1
+        self.spears = []                                   # dicts: one per spear
+        todo = {}
+        for n, (y, hs, d) in enumerate(rows):
+            for side, h in zip((-1, 1), hs):
+                tip = rng.uniform(16, 34)
+                sp = dict(y=y, side=side, h=h, n=n,
+                          L=half + tip * .9 - side * d,    # (the points run past each other, deep: no gap
+                          tip=tip, out=rng.uniform(40, 120),   # left where they meet to slip into)
+                          tilt=rng.uniform(-.025, .025), taper=rng.uniform(.65, .95),
+                          rag=rng.uniform(-1.2, 1.2, 4), gloss=rng.random() < .55, jit=rng.uniform(0, .04))
+                todo.setdefault(n, []).append(sp)
+        for n in list(todo):
+            if self.behind(rows[n][0], self.fronts[0]):
+                for sp in todo.pop(n):
+                    sp["t"] = self.hits[0] + sp["jit"]     # (the first volley: ragged)
+                    self.spears.append(sp)
+        darts = [d for d in darts]
+        fronts_at = {}
+        for k in range(1, len(self.fronts)):
+            side = -1 if k % 2 else 1
+            due = sorted((n for n in todo if self.behind(rows[n][0], self.fronts[k])), key=lambda n: -self.way * rows[n][0])
+            for j, n in enumerate(due):
+                sps = todo[n]
+                if j == 0:                                 # the front row: one spear, this note's side
+                    pick = [next((sp for sp in sps if sp["side"] == side), sps[0])]
+                    fronts_at[k] = pick[0]
+                else:                                      # (any left behind: all in)
+                    pick = list(sps)
+                for sp in pick:
+                    sp["t"] = self.hits[k]
+                    self.spears.append(sp)
+                    sps.remove(sp)
+                if not sps:
+                    del todo[n]
+        self.gates = []
+        for tg, yg, gx in gates:                           # the gates: a row from both sides, one gap
+            for side in (-1, 1):
+                reach = (gx - self.GATE / 2 - self.x0) if side < 0 else (self.x1 - gx - self.GATE / 2)
+                tip = rng.uniform(14, 22)
+                sp = dict(y=yg, side=side, h=rng.uniform(7.0, 9.0), n=-1, L=max(tip + 4, reach), tip=tip,
+                          out=rng.uniform(40, 120), tilt=rng.uniform(-.015, .015), taper=rng.uniform(.7, .95),
+                          rag=rng.uniform(-1.2, 1.2, 4), gloss=rng.random() < .55, jit=0.0, t=tg, gate=True, gx=gx)
+                self.spears.append(sp)
+                self.gates.append(sp)
+        self.darts = []                                    # the snapped points: dicts
+        for k, sp in fronts_at.items():
+            if not any(abs(self.hits[k] - d) < 1e-3 for d in darts):
+                continue
+            tf = sp["t"] + self.FLY
+            X = (lambda u, sp=sp: self.x0 + u) if sp["side"] < 0 else (lambda u, sp=sp: self.x1 - u)
+            o = np.array([X(sp["L"]), sp["y"]])
+            straight = np.array([0.0, float(self.way)])
+            soul = np.asarray(aim(tf + .05), float) if aim is not None else o + straight * 100
+            u = self.dart_way(o, soul) if aim is None else self.dart_pass(o, tf, aim, sp["side"])
+            far = self.DART_RANGE                          # where it breaks: the next gate past the soul in its
+            for g in self.gates:                           # way (it flies over those behind it), or the edge
+                if g["side"] != -1:
+                    continue
+                dy = g["y"] - o[1]
+                if (soul[1] - g["y"]) * self.way > -4 or abs(u[1]) < 1e-3:
+                    continue
+                s_ = (dy - self.way * 9) / u[1]
+                x_at = o[0] + u[0] * s_
+                gx = g["gx"]
+                if g["t"] + self.FLY <= tf + s_ / self.DART_V and abs(x_at - gx) > self.GATE / 2 - 3:
+                    far = min(far, s_)
+            for lim, comp in ((self.x0, 0), (self.x1, 0), (self.y0, 1), (self.y1, 1)):
+                if abs(u[comp]) > 1e-6:
+                    s_ = (lim - o[comp]) / u[comp]
+                    if s_ > 0:
+                        far = min(far, s_)
+            sp["snap"] = tf
+            self.darts.append(dict(sp=sp, o=o, u=u, tf=tf, far=far, hn=sp["h"] * sp["taper"], tip=sp["tip"]))
+        self.t0 = t_show - self.WARN
+        self.t1 = t_end + self.GONE
+        self.impact = None
+
+    def behind(self, y, f):
+        return y >= f if self.way < 0 else y <= f
+
+    def dart_pass(self, o, tf, aim, side):
+        """Which way a point snapped off at o (at tf) flies so as to come by the soul
+        (its line: aim) DART_MISS px off at the closest, on the side it comes from -
+        never across its way (it is in a gap, with no room to step aside)."""
+        ts = tf + np.linspace(0, self.DART_RANGE / self.DART_V, 30)
+        S = np.array([aim(t) for t in ts], float)
+        a0 = math.atan2(self.way, 0.0)
+        best, best_e = None, math.inf
+        for dev in np.linspace(-self.DART_TURN, self.DART_TURN, 71):
+            u = np.array([math.cos(a0 + dev), math.sin(a0 + dev)])
+            D = o + u * self.DART_V * (ts - tf)[:, None]
+            dd = np.linalg.norm(D - S, axis=1)
+            i = int(np.argmin(dd))
+            near = D[i, 0] - S[i, 0]
+            from_side = (o[0] - S[0, 0]) if abs(o[0] - S[0, 0]) > 1 else side
+            if near * from_side < 0 or (np.sign(D[:i + 1, 0] - S[:i + 1, 0]) * np.sign(from_side) < 0).any():
+                continue                                   # (it would cross its way)
+            e = abs(dd[i] - self.DART_MISS)
+            if e < best_e:
+                best, best_e = u, e
+        return best if best is not None else np.array([0.0, float(self.way)])
+
+    def dart_way(self, o, tgt):
+        """Which way a point snapped off at o flies to make for tgt (never further off
+        straight on than DART_TURN)."""
+        v = np.asarray(tgt, float) - o
+        a0 = math.atan2(self.way, 0.0)
+        ang = math.atan2(v[1], v[0]) if np.linalg.norm(v) > 1 else a0
+        dev = (ang - a0 + math.pi) % math.tau - math.pi
+        ang = a0 + max(-self.DART_TURN, min(self.DART_TURN, dev))
+        return np.array([math.cos(ang), math.sin(ang)])
+
+    def edge(self, t):
+        """The y of the front of what is in at t (None before any of it is)."""
+        ys = [sp["y"] - sp["h"] if self.way < 0 else sp["y"] + sp["h"] for sp in self.spears
+              if sp["t"] + self.FLY <= t and not sp.get("gate")]
+        if not ys or t >= self.te:
+            return None
+        return min(ys) if self.way < 0 else max(ys)
+
+    def spear(self, sp, e, inset=0.0, broken=False):
+        """Its outline with its point e px in from the sheet's edge (negative: still off it);
+        broken: its point snapped off (a ragged break at the neck)."""
+        side, y, h = sp["side"], sp["y"], sp["h"] - inset
+        if h <= .5:
+            return None
+        tip = e - inset
+        back = e - sp["L"] - sp["out"]                     # (its far end, off the sheet)
+        neck = tip - sp["tip"]
+        X = (lambda u: self.x0 + u) if side < 0 else (lambda u: self.x1 - u)
+        sl = sp["tilt"]
+        Y = lambda u, off: y + (u - tip) * sl + off          # (askew about its point: the points stay in line)
+        hn = h * sp["taper"]
+        r = sp["rag"]
+        mid1, mid2 = back + (neck - back) * .35, back + (neck - back) * .7
+        top = [(X(back), Y(back, -h)), (X(mid1), Y(mid1, -h * .97 + r[0])), (X(mid2), Y(mid2, -hn * 1.05 + r[1])),
+               (X(neck), Y(neck, -hn))]
+        bot = [(X(neck), Y(neck, hn)), (X(mid2), Y(mid2, hn * 1.02 + r[2])), (X(mid1), Y(mid1, h + r[3])),
+               (X(back), Y(back, h))]
+        if broken:                                         # (snapped: jagged where its point was)
+            return top + [(X(neck + 3), Y(neck, -hn * .3)), (X(neck - 2), Y(neck, hn * .2)),
+                          (X(neck + 2), Y(neck, hn * .6))] + bot
+        return top + [(X(tip), Y(tip, 0))] + bot
+
+    def draw(self, c):
+        t = c.t
+        if self.ts <= t < self.hits[-1]:                   # how far it will reach: a light wash, a line
+            g = clamp((t - self.ts) / .06)                 # (from when the page lands)
+            far = self.fronts[-1]
+            ya, yb = (far, self.y1 + 10) if self.way < 0 else (self.y0 - 10, far)
+            c.rect("art", self.x0 - 6, ya, self.x1 + 6, yb, fade_gray(24, g))
+            c.line("art", [(self.x0 - 6, far), (self.x1 + 6, far)], 3, fade_gray(130, g))
+        gone = clamp((t - self.te) / self.GONE)
+        for sp in self.spears:
+            a = t - sp["t"]                                # (0: it is shot)
+            land = a - self.FLY
+            if a < 0:
+                gate = sp.get("gate", False)               # (a gate: shown earlier and plainer - where the gap is)
+                warn = self.GATE_WARN if gate else self.WARN
+                if a >= -warn and t >= self.ts:            # about to come in: pale on the paper, flashing at the last
+                    late = a > (-.12 if gate else -.07) and int(t * 60) % 4 < 2
+                    p = self.spear(sp, sp["L"])
+                    if p:
+                        lo, hi = (115, 185) if gate else (70, 150)
+                        c.poly("art", p, fade_gray(hi if late else lo, clamp((a + warn) / .05)))
+                continue
+            if land < 0:                                   # flying in
+                e = -self.FAR + (sp["L"] + self.FAR) * (a / self.FLY)
+            elif land < .05:                               # (a touch too far, and back)
+                e = sp["L"] * (1.06 - .06 * land / .05)
+            else:
+                e = sp["L"]
+            e -= (sp["L"] + sp["out"] + 20) * gone ** 2   # pulled back out at the end
+            broken = t >= sp.get("snap", math.inf)
+            p = self.spear(sp, e, broken=broken)
+            if not p:
+                continue
+            if gone > 0:                                   # (no longer black)
+                c.poly("art", p, fade_gray(150, 1 - gone))
+                continue
+            c.line("art", p + p[:1], 3, 1)                 # a hairline of paper round it: where they lie over
+            c.poly("art", p, 255)                          # each other each one's shape still shows
+            if sp["gloss"]:                                # a wet glint along it
+                X = (lambda u: self.x0 + u) if sp["side"] < 0 else (lambda u: self.x1 - u)
+                u0, u1 = e - sp["L"] - sp["out"] * .6, e - sp["tip"] - 6
+                yy = sp["y"] - sp["h"] * .45
+                c.line("art", [(X(u0), yy + (u0 - e) * sp["tilt"]), (X(u1), yy + (u1 - e) * sp["tilt"])], 2, 1)
+            q = self.spear(sp, e, inset=2, broken=broken)
+            if q and e > 0:
+                c.poly("haz", q, 255)
+        for d in self.darts:
+            self.draw_dart(c, t, d)
+
+    def draw_dart(self, c, t, d):
+        """A snapped point: its line first (pale, flashing at the last), then it flies
+        along it - black, hurting, a streak behind - and breaks where the line ends."""
+        o, u, tf, far = d["o"], d["u"], d["tf"], d["far"]
+        a = t - tf
+        if a < -self.DART_WARN or t < self.ts or t >= self.te + self.GONE:
+            return
+        end = o + u * far
+        if a < 0:                                          # its line, with a head: where it will go
+            late = a > -.1 and int(t * 60) % 4 < 2
+            g = clamp((a + self.DART_WARN) / .05)
+            v = fade_gray(185 if late else 110, g)
+            c.line("art", [tuple(o), tuple(end)], 4, v)
+            n = np.array([-u[1], u[0]])
+            for sgn in (-1, 1):
+                c.line("art", [tuple(end), tuple(end - u * 11 + n * 6 * sgn)], 4, v)
+            return
+        s_ = self.DART_V * a
+        n = np.array([-u[1], u[0]])
+        if a < .07:                                        # the snap: a ring where it broke off
+            c.ring("top", o[0], o[1], 5 + 14 * a / .07, 2, fade_gray(120, 1 - a / .07))
+        if s_ < far:                                       # flying: the point, a streak behind it
+            head = o + u * s_
+            base = head - u * d["tip"]
+            tri = [tuple(head), tuple(base + n * d["hn"]), tuple(base - u * 3), tuple(base - n * d["hn"])]
+            tail = head - u * min(s_, 46.0)
+            c.line("art", [tuple(tail), tuple(base)], 3, 150)
+            c.line("art", tri + tri[:1], 3, 1)
+            c.poly("art", tri, 255)
+            hz = [tuple(head - u * 2), tuple(base + n * (d["hn"] - 2)), tuple(base - n * (d["hn"] - 2))]
+            c.poly("haz", hz, 255)
+            return
+        b = (s_ - far) / self.DART_V                       # broken on what it hit: splinters, pale
+        if b < .16:
+            q = b / .16
+            rr = np.random.default_rng(int(tf * 1000) % 100000)
+            for _ in range(3):
+                ang = math.atan2(-u[1], -u[0]) + rr.uniform(-1.3, 1.3)
+                dd = (5 + 16 * rr.uniform(.4, 1)) * (1 - (1 - q) ** 2)
+                p0 = end + dd * np.array([math.cos(ang), math.sin(ang)])
+                c.line("art", [tuple(p0), tuple(p0 + 5 * np.array([math.cos(ang), math.sin(ang)]))], 3,
+                       fade_gray(150, 1 - q))
+            c.ring("art", end[0], end[1], 4 + 12 * q, 2, fade_gray(140, 1 - q))
+
+
+class CircleCut(Attack):
+    """Between the climax's rounds (M42): the sheet - opened out to the whole screen
+    - cut down round the soul. First a warning: a sign in the middle of what is
+    going to go, and the circle that will be left, pale. On the drum roll (lines:
+    32nds) blades go straight across the sheet in no order, each lopping off a
+    piece outside the circle - most of the sheet is gone in a blink. Then on each
+    cut (cuts: eighths) a circle shows (pale, flashing at the last) and a blade
+    goes round it, and everything outside it drops away. What is gone is black,
+    and it hurts; what drops away goes in pieces, sliding off into the dark and
+    darkening. All the while what is left is slashed through, every which way -
+    each slash shows first as a pale line, then cuts through black (it hurts), a
+    moment, and fades; one long one sweeps round on the slide. On t_open it opens
+    out whole again. cuts: (t, radius); lines: (t, angle of its normal, distance
+    from the middle); slashes: (t, angle, how far from the soul, width, bend) or
+    (t, None, None, width, how long): the sweep round, ending on t; warn: (t,
+    sign's corners, (the bar of its '!', its dot)). In the arena's own frame."""
+
+    PRE = .16            # s a cut's circle / a slash's line shows first
+    SWEEP = .06          # s the blade takes round
+    STRIKE = .03         # s a slash takes to cut across
+    HOLD = .1            # s it stays black
+    FADE = .14
+    FALL = .36           # s the pieces take to drop away
+    OPEN = .09           # s it takes to open out again (it lands on t_open)
+
+    SCRAPS = 300         # the sheet is cut into this many scraps (irregular: a warped Voronoi)
+    KEEP = 190           # px: the drum roll leaves the scraps that lie within this of the middle
+
+    def __init__(self, rect, centre, cuts, slashes, t_open, aim, bursts=(), warn=None, seed=0):
+        self.rect = rect
+        self.c = np.asarray(centre, float)
+        self.cuts, self.to, self.warn = list(cuts), t_open, warn
+        self.bursts = list(bursts)                         # the drum roll: a burst of scraps cut away on each
+        self.seed = seed
+        self._grid = None
+        rng = np.random.default_rng(seed)
+        self.sectors = [np.sort(rng.uniform(-math.pi, math.pi, rng.integers(6, 10))) for _ in self.cuts]
+        self.drift = [rng.uniform(.6, 1.4, 12) for _ in self.cuts]
+        self.a0 = rng.uniform(0, math.tau, len(self.cuts))          # where each blade starts round
+        self.slashes = []                                  # (t, polyline, width, how long it takes)
+        for sl in slashes:
+            th, ang, off, w, bend = sl[:5]
+            short = sl[5] if len(sl) > 5 else None         # (a short one: this long)
+            R = self.radius(th + 1e-4)
+            p = np.asarray(aim(th), float)
+            if ang is None:                                # the sweep: round the middle, clear of the soul
+                d = float(np.linalg.norm(p - self.c))
+                r = d + 26 if d + 26 < R - 12 else max(14.0, d - 26)
+                a_s = math.atan2(p[1] - self.c[1], p[0] - self.c[0]) + math.pi
+                pts = [tuple(self.c + r * np.array([math.cos(a_s + u), math.sin(a_s + u)]))
+                       for u in np.linspace(0, math.tau * .9, 40)]
+                self.slashes.append((th, pts, w, bend))     # (bend: how long the sweep takes)
+                continue
+            u = np.array([math.cos(ang), math.sin(ang)])
+            n = np.array([-u[1], u[0]])
+            foot = p + n * off
+            dist = float((foot - self.c) @ n)              # (keep the line well inside what is left)
+            if abs(dist) > R - 14:
+                dist = math.copysign(R - 14, dist)
+            half = math.sqrt(max(1.0, R * R - dist * dist))
+            e0, e1 = self.c + n * dist - u * half, self.c + n * dist + u * half
+            if short is not None:                          # (centred where it passes the soul)
+                mid = self.c + n * dist + u * float(np.clip((p - self.c) @ u, -half + short / 2, half - short / 2))
+                e0, e1 = mid - u * short / 2, mid + u * short / 2
+            L = float(np.linalg.norm(e1 - e0))
+            pts = [tuple(e0 + (e1 - e0) * s_ + n * bend * L * .18 * 4 * s_ * (1 - s_)) for s_ in np.linspace(0, 1, 12)]
+            self.slashes.append((th, pts, w, self.STRIKE))
+        starts = [t for t, _ in self.cuts] + [s[0] for s in self.slashes] + self.bursts
+        self.t0 = min(min(starts) - self.PRE - .1, warn[0] if warn else math.inf)
+        self.t1 = t_open + .05
+        self.impact = None
+
+    def radius(self, t):
+        """The radius of the circle left of the sheet at t (inf: none yet)."""
+        R = math.inf
+        for tk, Rk in self.cuts:
+            if t >= tk:
+                R = Rk
+        return R
+
+    def grow(self, t):
+        """How far it has opened out again (0..1)."""
+        return clamp((t - (self.to - self.OPEN)) / self.OPEN) ** 2
+
+    def scraps(self, xs, ys):
+        """The sheet cut into scraps over this grid: (label of each pixel, when its scrap
+        goes in the drum roll (inf: not then), per scrap (its bounding box, which way it
+        flies, how far)) - made once per grid."""
+        key = (xs[0], ys[0], len(xs), len(ys))
+        if self._grid is not None and self._grid[0] == key:
+            return self._grid[1]
+        rng = np.random.default_rng(self.seed + 1)
+        X, Y = np.meshgrid(xs, ys)
+        ph = rng.uniform(0, math.tau, 4)
+        WX = X + 5 * (np.sin(X * .047 + ph[0]) + np.sin(Y * .083 + ph[1]))
+        WY = Y + 5 * (np.sin(Y * .051 + ph[2]) + np.sin(X * .079 + ph[3]))
+        x0, y0, x1, y1 = self.rect
+        S = np.column_stack([rng.uniform(x0 - 20, x1 + 20, self.SCRAPS), rng.uniform(y0 - 20, y1 + 20, self.SCRAPS)])
+        best = np.full(X.shape, np.inf)
+        lab = np.zeros(X.shape, int)
+        for i0 in range(0, len(S), 50):
+            for i, (sx, sy) in enumerate(S[i0:i0 + 50], i0):
+                dd = (WX - sx) ** 2 + (WY - sy) ** 2
+                m = dd < best
+                best[m], lab[m] = dd[m], i
+        ang = np.arctan2(S[:, 1] - self.c[1], S[:, 0] - self.c[0])
+        dist = np.hypot(S[:, 0] - self.c[0], S[:, 1] - self.c[1])
+        order = rng.permutation(max(1, len(self.bursts)))  # the bursts go round in no order
+        when = np.full(len(S), np.inf)
+        if self.bursts:
+            sector = (((ang + rng.uniform(-.35, .35, len(S))) % math.tau) / math.tau * len(self.bursts)).astype(int) % len(self.bursts)
+            out = dist > self.KEEP
+            when[out] = np.asarray(self.bursts)[order[sector[out]]]
+        tcut = when[lab]
+        info = []
+        for i in range(len(S)):
+            yy, xx = np.nonzero(lab == i)
+            box = (yy.min(), yy.max() + 1, xx.min(), xx.max() + 1) if len(yy) else (0, 0, 0, 0)
+            u = (S[i] - self.c) / max(1.0, dist[i])
+            info.append((box, u, rng.uniform(70, 230), when[i]))
+        self._grid = (key, (lab, tcut, info))
+        return self._grid[1]
+
+    def gone(self, X, Y, t, grid=None):
+        """Where the sheet is gone at t (a mask over the grid X, Y)."""
+        gr = self.grow(t)
+        dx, dy = X - self.c[0], Y - self.c[1]
+        m = np.zeros(X.shape, bool)
+        if grid is not None:
+            lab, tcut, info = grid
+            m |= (tcut <= t) & (dx * dx + dy * dy > (self.KEEP - 40 + 900 * gr) ** 2)
+        R = self.radius(t)
+        if R < math.inf:
+            R = R + (900 - R) * gr
+            m |= dx * dx + dy * dy > R * R
+        return m
+
+    def draw(self, c):
+        t = c.t
+        if t >= self.to:
+            return
+        x0, y0, x1, y1 = self.rect
+        k = c.k
+        xs = np.arange(math.floor((x0 - 18) / k) * k, x1 + 18, k, dtype=float)
+        ys = np.arange(math.floor((y0 - 18) / k) * k, y1 + 18, k, dtype=float)
+        X, Y = np.meshgrid(xs, ys)
+        if self.warn is not None:                          # the warning: a sign, and the circle that will be left
+            tw, sign, (bar, dot) = self.warn
+            first = min(self.bursts + [self.cuts[0][0]])
+            if tw <= t < first + .05:
+                g = clamp((t - tw) / .05) * (1 - clamp((t - first) / .05))
+                v = fade_gray(170 if int(t * 60) % 6 < 3 else 90, g)
+                c.line("art", [tuple(p) for p in sign] + [tuple(sign[0])], 11, v)
+                c.line("art", [tuple(p) for p in bar], 12, v)
+                c.circle("art", dot[0], dot[1], 13, v)
+            last = self.cuts[-1][0]
+            if tw <= t < last - self.PRE:                  # where to get to: the circle that will be left -
+                g = clamp((t - tw) / .05)                  # a pale disc, its rim, a ring closing in on it
+                Rf = self.cuts[-1][1]
+                c.circle("art", self.c[0], self.c[1], 2 * Rf, fade_gray(28, g))
+                c.ring("art", self.c[0], self.c[1], Rf, 4, fade_gray(120, g))
+                ph = ((t - tw) / .3) % 1
+                c.ring("art", self.c[0], self.c[1], Rf + 60 * (1 - ph), 3, fade_gray(90 * ph, g))
+        grid = self.scraps(xs, ys)
+        gone = self.gone(X, Y, t, grid)
+        if gone.any():                                     # gone: black (and it hurts)
+            c.patch("art", xs[0], ys[0], np.where(gone, 255, 0))
+            R = self.radius(t)
+            hz = gone.copy()
+            if R < math.inf:                               # (it hurts from 2 px in past the edge)
+                dx, dy = X - self.c[0], Y - self.c[1]
+                hz &= ~((dx * dx + dy * dy <= (R + (900 - R) * self.grow(t) + 2) ** 2) & (dx * dx + dy * dy > R * R))
+            c.patch("haz", xs[0], ys[0], np.where(hz, 255, 0))
+        if t < self.to - self.OPEN:                        # what has just been cut away: scraps flying off
+            lab, tcut, info = grid
+            r2 = (X - self.c[0]) ** 2 + (Y - self.c[1]) ** 2
+            events = [(tb, (tcut == tb) & (r2 > (self.KEEP - 40) ** 2)) for tb in self.bursts]
+            for tk, Rk in self.cuts:
+                if 0 <= t - tk < self.FALL:
+                    events.append((tk, (r2 > Rk * Rk) & ~self.gone(X, Y, tk - 1e-4, grid)))
+            for tk, region in events:
+                a = t - tk
+                if not (0 <= a < self.FALL) or not region.any():
+                    continue
+                q = a / self.FALL
+                v = int(1 + 254 * q ** 1.4)
+                for l in np.unique(lab[region]):
+                    (ya, yb, xa, xb), u, far, _ = info[l]
+                    m = region[ya:yb, xa:xb] & (lab[ya:yb, xa:xb] == l)
+                    e = 1 - (1 - q) ** 2                   # (thrown off hard, slowing)
+                    self._drop(c, xs, ys, m, u, e, far, (ya, xa), v)
+            for j, tb in enumerate(self.bursts):           # each burst: a crackle of short blades over the
+                a = t - tb                                 # scraps it cuts away, each a flick, one after another
+                if not (-.02 <= a < .07):
+                    continue
+                rr = np.random.default_rng(self.seed + 100 + j)
+                mine = [l for l in range(len(info)) if info[l][3] == tb]
+                for l in rr.permutation(mine)[:26]:
+                    (ya, yb, xa, xb), u, far, _ = info[l]
+                    dt = rr.uniform(-.02, .03)             # (staggered round the note)
+                    ang = rr.uniform(0, math.pi)
+                    L = rr.uniform(9, 24)
+                    b = a - dt
+                    if not (0 <= b < .045):
+                        continue
+                    cx, cy = xs[(xa + xb) // 2] + rr.uniform(-6, 6), ys[(ya + yb) // 2] + rr.uniform(-6, 6)
+                    e = np.array([math.cos(ang), math.sin(ang)])
+                    dd = e * L * (.6 + 4 * min(b, .04 / 4) / .04)
+                    nn = np.array([-e[1], e[0]]) * 2.5     # (a dark cut and a pale edge by it: it shows on the
+                    c.line("top", [(cx - dd[0], cy - dd[1]), (cx + dd[0], cy + dd[1])], 2, 255)   # paper and on the dark)
+                    c.line("top", [(cx - dd[0] + nn[0], cy - dd[1] + nn[1]), (cx + dd[0] + nn[0], cy + dd[1] + nn[1])], 2, 1)
+        for i, (tk, Rk) in enumerate(self.cuts):
+            a = t - tk
+            if -self.PRE <= a < 0:                         # its circle shows first
+                late = a > -.06 and int(t * 60) % 4 < 2
+                c.ring("art", self.c[0], self.c[1], Rk, 3, fade_gray(140 if late else 70, (a + self.PRE) / .05))
+            if -self.SWEEP <= a < .08:                     # the blade going round
+                prog = 1 - clamp(a / -self.SWEEP) if a < 0 else 1.0
+                a0 = self.a0[i]
+                pts = [tuple(self.c + Rk * np.array([math.cos(a0 + v), math.sin(a0 + v)]))
+                       for v in np.linspace(0, math.tau * prog, max(2, int(48 * prog)))]
+                c.line("art", pts, 3, fade_gray(200, 1 - clamp(a / .08)) if a >= 0 else 200)
+                if a < 0:
+                    hx, hy = pts[-1]
+                    c.circle("art", hx, hy, 9, 255)
+        for th, pts, w, strike in self.slashes:            # the slashes inside
+            a = t - th
+            if a < -self.PRE or a > self.HOLD + self.FADE:
+                continue
+            if a < 0:
+                late = a > -.06 and int(t * 60) % 4 < 2
+                c.line("art", pts, max(2.0, w * .5), fade_gray(130 if late else 60, (a + self.PRE) / .05))
+                if strike > self.STRIKE and a > -strike:   # the sweep: cutting round as the slide goes
+                    n_ = max(2, int(len(pts) * (1 + a / strike)))
+                    c.line("art", pts[:n_], w, 255)
+                    c.line("haz", pts[:n_], max(1.0, w - 4), 255)
+                continue
+            if a < self.HOLD:
+                n_ = len(pts) if strike > self.STRIKE else max(2, int(len(pts) * min(1.0, a / strike + .25)))
+                c.line("art", pts[:n_], w, 255)
+                c.line("haz", pts[:n_], max(1.0, w - 4), 255)
+            else:
+                c.line("art", pts, w * (1 - .4 * (a - self.HOLD) / self.FADE), fade_gray(110, 1 - (a - self.HOLD) / self.FADE))
+
+    def _drop(self, c, xs, ys, mask, out, e, far, at, v):
+        """A scrap cut away (mask, its corner at grid cell `at`), thrown off into the
+        dark (out, `far` px by the end), darkening (v)."""
+        if not mask.any():
+            return
+        k = c.k
+        sy = at[0] + int(round((out[1] * far * e + 30 * e * e) / k))   # (and dropping)
+        sx = at[1] + int(round(out[0] * far * e / k))
+        c.patch("art", xs[0] + sx * k, ys[0] + sy * k, np.where(mask, v, 0))
+
+
+class InkRings(Attack):
+    """The sixteenths after the walls: rings of ink round the soul, one after
+    another - the outermost first - each brushed on one note (hollow, dry-brushed,
+    grey: harmless; turning; beads of ink on it) and firing on the next: its beads
+    jerk back and swell (flashing), then shoot in at the rings' middle and on
+    through it, hard, trailing ink (black, harmful) - and the ring blows away. (All
+    the rings' beads are in line as they go off: there are lanes between them.) In
+    the arena's own frame."""
+
+    V = 720.0            # px/s they shoot in at
+    KICK = .05           # s they draw back for
+    SWEEP = .03          # s the brush takes round a ring
+
+    def __init__(self, center, radii, draws, fires, n=8, seed=0):
+        self.c = np.asarray(center, float)
+        self.R, self.draws, self.fires, self.n = list(radii), list(draws), list(fires), n
+        rng = np.random.default_rng(seed)
+        self.w = [(1.6 if k % 2 == 0 else -1.6) for k in range(len(self.R))]   # rad/s
+        common = rng.uniform(0, math.tau)
+        self.th0 = [common - self.w[k] * (self.fires[k] - self.draws[k]) for k in range(len(self.R))]
+        self.brush = rng.uniform(0, 1, (len(self.R), 48))
+        self.t0 = min(self.draws)
+        self.t1 = max(self.fires) + 1.0
+        self.impact = None
+
+    def bead(self, k, j, t):
+        """Bead j of ring k: (position, direction it flies or None, how far into its kick)."""
+        tf = min(t, self.fires[k])
+        a = self.th0[k] + j * math.tau / self.n + self.w[k] * (tf - self.draws[k])
+        u = np.array([math.cos(a), math.sin(a)])
+        kick = clamp((t - self.fires[k] + self.KICK) / self.KICK)
+        if t <= self.fires[k]:
+            return self.c + u * (self.R[k] + 10 * math.sin(math.pi / 2 * kick)), None, kick
+        r = self.R[k] + 10 - self.V * (t - self.fires[k])
+        return self.c + u * r, a + math.pi, 1.0
+
+    def draw(self, c):
+        t = c.t
+        for k, R in enumerate(self.R):
+            a = t - self.draws[k]
+            if a < 0:
+                continue
+            g = 1 - clamp((t - self.fires[k]) / .12)      # it blows away as it fires
+            if g > 0:                                      # the ring: a dry brush stroke round, turning
+                prog = clamp(a / self.SWEEP)
+                m = 48
+                rot = self.w[k] * a
+                Rr = R * (1 + .25 * (1 - g))
+                for q in range(int(m * prog)):
+                    b = self.brush[k][q]
+                    if b < .12:
+                        continue                           # (dry-brush gaps)
+                    a0 = rot + q / m * math.tau
+                    a1 = a0 + math.tau / m * 1.05
+                    wd = 3 + 5 * b * (.6 + .4 * math.sin(3 * q / m * math.tau))
+                    c.line("art", [tuple(self.c + Rr * np.array([math.cos(a0), math.sin(a0)])),
+                                   tuple(self.c + Rr * np.array([math.cos(a1), math.sin(a1)]))],
+                           wd * g, fade_gray(110, g))
+            for j in range(self.n):
+                if a < self.SWEEP * j / self.n:
+                    continue
+                p, ang, kick = self.bead(k, j, t)
+                if ang is None:                            # on the ring; drawing back, swelling, flashing
+                    late = kick > 0 and int(t * 60) % 4 < 2
+                    c.circle("art", p[0], p[1], 9 + 6 * kick, 180 if late else int(110 + 60 * kick))   # (grey: harmless)
+                    continue
+                b = t - self.fires[k]
+                if b < .08:                                # the shot: a burst where it left
+                    q0 = self.c + (p - self.c) / max(1e-6, np.linalg.norm(p - self.c)) * (R + 10)
+                    c.ring("top", q0[0], q0[1], 6 + 16 * b / .08, 2, fade_gray(110, 1 - b / .08))
+                if np.linalg.norm(p - self.c) > 440:
+                    continue
+                ux, uy = math.cos(ang), math.sin(ang)
+                streak = [(p[0] - ux * 34, p[1] - uy * 34), (p[0], p[1])]
+                c.line("top", streak, 3, 245)              # its streak (black: it hurts too)
+                c.line("haz", streak, 3, 255)
+                ink_drop(c, p[0], p[1], ang, 5.0, exact=True)
+
+
+class InkLanes(Attack):
+    """The rings' answer after the turn (M37): straight lines of ink down both sides
+    of the sheet, parallel - brushed on a side at a time (hollow, dry-brushed, grey:
+    harmless; beads of ink strung on them) - then firing one line at a time, the
+    left and the right side by turns: its beads jerk back (outwards), swell and
+    flash, then shoot straight across the sheet, hard, trailing ink (black, all of
+    it harmful) - and the line blows away. Each line's beads are staggered a little
+    from the last's, so there are lanes between them, moving. lines: (x, way,
+    t_draw, t_fire, [y, ...]) - way +1: it fires to the right. In the arena's own
+    frame."""
+
+    V = 720.0            # px/s they shoot across at
+    KICK = .05           # s they draw back for
+    SWEEP = .13          # s the brush takes down a line (a bead of ink at its tip, laying it down)
+    FADE = .09           # s the stroke behind the tip takes to come up full
+
+    def __init__(self, rect, lines, seed=0):
+        self.x0, self.y0, self.x1, self.y1 = rect
+        self.lines = [(float(x), way, td, tf, list(ys)) for x, way, td, tf, ys in lines]
+        rng = np.random.default_rng(seed)
+        self.brush = rng.uniform(0, 1, (len(self.lines), 40))
+        self.wig = rng.uniform(0, math.tau, (len(self.lines), 2))
+        self.t0 = min(l[2] for l in self.lines)
+        self.t1 = max(l[3] for l in self.lines) + .6
+        self.impact = None
+
+    def passed(self, f):
+        """How long after it starts the brush goes past a point f of the way down."""
+        lo, hi = 0.0, 1.0                                  # (smooth(u) = f, u in 0..1)
+        for _ in range(20):
+            mid = (lo + hi) / 2
+            lo, hi = (mid, hi) if smooth(mid) < f else (lo, mid)
+        return self.SWEEP * (lo + hi) / 2
+
+    def draw(self, c):
+        t = c.t
+        H = self.y1 - self.y0
+        for k, (x, way, td, tf, ys) in enumerate(self.lines):
+            a = t - td
+            if a < 0:
+                continue
+            g = 1 - clamp((t - tf) / .12)                  # it blows away as it fires
+            m = len(self.brush[k])
+            tip = smooth(clamp(a / self.SWEEP))            # (where the brush is: easing in and out)
+            if g > 0:                                      # the line: a dry brush stroke down the sheet,
+                spread = 1 + .6 * (1 - g)                  # coming up behind the brush as it goes
+                for q in range(int(m * tip)):
+                    b = self.brush[k][q]
+                    if b < .12:
+                        continue                           # (dry-brush gaps)
+                    age = a - self.passed(q / m)
+                    up = smooth(clamp(age / self.FADE))
+                    ya, yb = self.y0 - 10 + (H + 20) * q / m, self.y0 - 10 + (H + 20) * (q + 1.05) / m
+                    xa = x + 2 * math.sin(ya * .03 + self.wig[k][0]) * spread - way * 6 * (1 - g)
+                    xb = x + 2 * math.sin(yb * .03 + self.wig[k][0]) * spread - way * 6 * (1 - g)
+                    wd = 3 + 5 * b * (.6 + .4 * math.sin(3 * q / m * math.tau + self.wig[k][1]))
+                    c.line("art", [(xa, ya), (xb, yb)], wd * g * (.5 + .5 * up), fade_gray(110, g * up))
+                if a < self.SWEEP:                         # the brush's tip: a bead of ink laying it down
+                    yt = self.y0 - 10 + (H + 20) * tip
+                    c.circle("art", x + 2 * math.sin(yt * .03 + self.wig[k][0]), yt, 11, 150)
+            kick = clamp((t - tf + self.KICK) / self.KICK)
+            for j, y in enumerate(ys):
+                age = a - self.passed((y - self.y0 + 10) / (H + 20))
+                if age < 0:
+                    continue                               # (not brushed on yet)
+                if t <= tf:                                # on the line; drawing back, swelling, flashing
+                    pop = smooth(clamp(age / .07))         # (popping up as the brush goes by)
+                    bx = x - way * 10 * math.sin(math.pi / 2 * kick)
+                    late = kick > 0 and int(t * 60) % 4 < 2
+                    c.circle("art", bx, y, (9 + 6 * kick) * (.3 + .7 * pop),
+                             180 if late else int((110 + 60 * kick) * (.4 + .6 * pop)))
+                    continue
+                b = t - tf
+                if b < .08:                                # the shot: a burst where it left
+                    c.ring("top", x - way * 10, y, 6 + 16 * b / .08, 2, fade_gray(110, 1 - b / .08))
+                px = x - way * 10 + way * self.V * b
+                if not (self.x0 - 40 <= px <= self.x1 + 40):
+                    continue
+                ang = 0.0 if way > 0 else math.pi
+                streak = [(px - way * 34, y), (px, y)]
+                c.line("top", streak, 3, 245)              # its streak (black: it hurts too)
+                c.line("haz", streak, 3, 255)
+                ink_drop(c, px, y, ang, 5.0, exact=True)
+
+
+class InkBubbles(Attack):
+    """Little bubbles of ink - each smaller than the soul - shot at it head-on in the
+    climax's spike seas: on every sixteenth a pair of them wells up on the edge of
+    the sheet the soul is running for (pale, swelling, flashing at the last), jerks
+    back - and fires, hard, straight down the sheet at it (one at where the soul
+    will be, one elsewhere), a streak of ink behind it and a ring thrown off where
+    it went from. Black (they hurt), a rim of paper and a glint; off the paper
+    white. They pop as the sea ends. volleys: (time it fires, [x, ...]); way +1:
+    coming down. In the arena's own frame."""
+
+    V = 480.0            # px/s
+    SWELL = .12          # s they well up for
+    KICK = .04           # s they jerk back for
+
+    def __init__(self, rect, way, volleys, t_end, sea=None, seed=0):
+        self.x0, self.y0, self.x1, self.y1 = rect
+        self.way, self.tb = way, t_end
+        rng = np.random.default_rng(seed)
+        self.y_in = self.y0 + 10 if way > 0 else self.y1 - 10
+        gates = [g for g in (sea.gates if sea is not None else []) if g["side"] < 0]
+        self.bubs = []                                     # (time it fires, x, radius, time it bursts)
+        for tf, xs in volleys:
+            for x in xs:
+                r = rng.uniform(4.0, 6.0)                  # (the heart is 16 across)
+                pop = t_end
+                if sea is not None:                        # it bursts on the front of the spikes - or on a
+                    for t in np.arange(tf, t_end, 1 / 240):    # gate in its way (the second wave), unless it
+                        e = sea.edge(t)                    # comes through the gap
+                        y = self.y(tf, t)
+                        if e is not None and way * (y + way * r - e) >= 0:
+                            pop = float(t)
+                            break
+                        if any(g["t"] + sea.FLY <= t < sea.te and abs(y - g["y"]) <= g["h"] + r
+                               and abs(x - g["gx"]) > sea.GATE / 2 - r for g in gates):
+                            pop = float(t)
+                            break
+                self.bubs.append((tf, x, r, pop))
+        self.t0 = min(b[0] for b in self.bubs) - self.SWELL
+        self.t1 = t_end + .12
+        self.impact = None
+
+    def y(self, tf, t):
+        return self.y_in - self.way * 4 + self.way * self.V * (t - tf)
+
+    BLOOM = .22          # s it takes to bloom open on the spikes
+
+    def bloom(self, c, x, y, r, q, key):
+        """It bursts on the spikes (q: 0..1 through it): a flash, a ring of paper torn
+        open wide round it (white over the black, grey on the paper), and its ink
+        thrown back the way it came in a fan of drops, slowing and shrinking - all
+        pale (harmless)."""
+        w = self.way
+        e = 1 - (1 - q) ** 3                               # (fast out, slowing)
+        if q < .14:                                        # the flash
+            c.circle("top", x, y, 2 * r + 22 * q / .14, 1)
+        R = r + 26 * e
+        wd = 5 * (1 - q) + 1
+        c.ring("top", x, y, R + wd, max(1.0, wd * .7), 120)   # (grey: shows on the paper)
+        c.ring("top", x, y, R, wd, 1)                          # (paper: shows on the ink)
+        rng = np.random.default_rng(int(key * 1000) * 31 + int(x * 7))
+        for j in range(9):
+            u = -math.pi / 2 * w + (j - 4) * .36 + rng.uniform(-.12, .12)   # (a fan, back the way it came)
+            reach = r + rng.uniform(40, 66) * e            # (well out past the ring)
+            px, py = x + math.cos(u) * reach, y + math.sin(u) * reach
+            s = rng.uniform(4, 7) * (1 - q) + 1
+            back = rng.uniform(5, 10) * (1 - q)            # (a streak behind it while it is fast)
+            c.line("top", [(px - math.cos(u) * back, py - math.sin(u) * back), (px, py)], max(1.0, s * .5), 135)
+            c.circle("top", px, py, s, 140)
+
+    def draw(self, c):
+        t = c.t
+        g = 1 - clamp((t - self.tb) / .12)                # (they pop at the end)
+        if g <= 0:
+            return
+        w = self.way
+        for tf, x, r, pop in self.bubs:
+            a = t - tf
+            if a < -self.SWELL:
+                continue
+            if t >= pop:                                   # burst on the spikes: it blooms open
+                b = t - pop
+                yp = self.y(tf, pop)
+                if not (self.y0 - 14 <= yp <= self.y1 + 14):
+                    continue
+                if pop < self.tb and b < self.BLOOM:       # on the spikes (or a gate): it blooms open
+                    self.bloom(c, x, yp, r, b / self.BLOOM, tf)
+                elif pop >= self.tb and b < .12:           # (the sea ending: they just pop, small)
+                    q = b / .12
+                    c.ring("top", x, yp, r + 10 * q, 2, 1)
+                continue
+            if a < 0:                                      # welling up on the edge: pale; jerking back
+                q = clamp((a + self.SWELL) / (self.SWELL - self.KICK))
+                back = 4 * clamp((a + self.KICK) / self.KICK)
+                late = a > -.05 and int(t * 60) % 4 < 2
+                c.circle("top", x, self.y_in - w * back, 2 * r * (.4 + .6 * q) * (1 + .25 * back / 4),
+                         int((150 if late else 90) * min(1.0, q * 2) * g))
+                continue
+            y = self.y(tf, t)
+            if not (self.y0 - 14 <= y <= self.y1 + 14):
+                continue
+            if a < .1:                                     # the ring thrown off where it went from
+                c.ring("top", x, self.y_in, r + 26 * a / .1, 2, fade_gray(110, 1 - a / .1))
+            R = r * g
+            if R < 1:
+                continue
+            tail = min(46.0, self.V * a)                   # its streak: thinning away behind it
+            c.poly("top", [(x - R * .8, y - w * R * .2), (x + R * .8, y - w * R * .2), (x, y - w * tail)], 110)
+            c.circle("top", x, y, 2 * R + 3, 1)            # a rim of paper
+            c.circle("top", x, y, 2 * R, 245)
+            c.circle("top", x - R * .35, y - R * .35, max(1.5, R * .45), 1)          # a glint
+            c.circle("haz", x, y, max(1.0, 2 * R - 2), 255)
+
+
+class FoldBurst(Attack):
+    """The page slamming down from a turn (the climax's pairs): ink thrown off all its
+    edges (white off the paper), and its outline flashing - no shake. In the arena's
+    own frame: it turns with the page."""
+
+    def __init__(self, t, rect, seed=0):
+        self.tl, self.rect = t, rect
+        rng = np.random.default_rng(seed)
+        self.drops = rng.uniform(0, 1, (40, 4))
+        self.t0, self.t1 = t, t + .3
+        self.impact = None
+
+    def draw(self, c):
+        a = c.t - self.tl
+        if a < 0 or a > .3:
+            return
+        x0, y0, x1, y1 = self.rect
+        q = a / .3
+        if a < .08:                                        # its edges flash
+            v = fade_gray(230, 1 - a / .08)
+            for p0, p1 in (((x0, y0), (x1, y0)), ((x1, y0), (x1, y1)), ((x1, y1), (x0, y1)), ((x0, y1), (x0, y0))):
+                c.line("top", [p0, p1], 4, v)
+        per = 2 * (x1 - x0) + 2 * (y1 - y0)
+        for r1, r2, r3, r4 in self.drops:                  # ink flung off its edges, outwards
+            s_ = r1 * per
+            if s_ < x1 - x0:
+                p, n = (x0 + s_, y0), (0, -1)
+            elif s_ < x1 - x0 + y1 - y0:
+                p, n = (x1, y0 + s_ - (x1 - x0)), (1, 0)
+            elif s_ < 2 * (x1 - x0) + y1 - y0:
+                p, n = (x1 - (s_ - (x1 - x0) - (y1 - y0)), y1), (0, 1)
+            else:
+                p, n = (x0, y1 - (s_ - 2 * (x1 - x0) - (y1 - y0))), (-1, 0)
+            d = 8 + 70 * out_cubic(q) * (.4 + r2)
+            ang = math.atan2(n[1], n[0]) + (r3 - .5) * 1.2
+            c.circle("top", p[0] + math.cos(ang) * d, p[1] + math.sin(ang) * d, (3 + 4 * r4) * (1 - .7 * q),
+                     fade_gray(235, 1 - q))
+
+
+class EdgeSpray(Attack):
+    """The trill: on each note a spray of ink is flung in from one of the sheet's
+    edges (a side a note) - that edge swells there first (pale), then a fan of black
+    drops flies in across the sheet (harmful). hits: (t, side, y) in the arena's own
+    frame; side +1: from the right edge. lag: px they are left behind by the sheet's
+    moves, if any."""
+
+    WARN = .22
+    R = 5.0
+
+    def __init__(self, rect, hits, n, speed, spread=.5, lag=None):
+        self.x0, self.y0, self.x1, self.y1 = rect
+        self.hits, self.n, self.v, self.spread = sorted(hits), n, speed, spread
+        self.lag = lag or (lambda t: 0.0)
+        self.t0 = self.hits[0][0] - self.WARN
+        self.t1 = self.hits[-1][0] + (self.x1 - self.x0 + 200) / speed
+        self.impact = None
+
+    def draw(self, c):
+        t = c.t
+        for th, side, y in self.hits:
+            a = t - th
+            ex = self.x1 if side > 0 else self.x0
+            if -self.WARN <= a < 0:                        # the edge swells, pale
+                u = 1 + a / self.WARN
+                c.circle("art", ex, y, 2 * (4 + 10 * u), fade_gray(100 * (.7 + .3 * math.sin(t * 50)) if u > .6 else 100, 1))
+                continue
+            if a < 0:
+                continue
+            if a < .1:                                     # a splash off the edge
+                c.ring("top", ex, y, 6 + 20 * a / .1, 2, fade_gray(90, 1 - a / .1))
+            base = math.pi if side > 0 else 0.0
+            for k in range(self.n):
+                ang = base + self.spread * (2 * k / max(1, self.n - 1) - 1)
+                d = 4 + self.v * a
+                x, y_ = ex + math.cos(ang) * d + self.lag(t), y + math.sin(ang) * d
+                if not (-120 <= x <= 760):
+                    continue
+                ink_drop(c, x, y_, ang, self.R)
+
+
+class MirrorPrint(Attack):
+    """The page turns over at the end of the bar (the sheet flips to the other half
+    of the screen - a render transform, choreo.sheet_flip) and the ink on it prints
+    through, mirrored: every stain the gobs left this bar shows its ghost on the far
+    side of the sheet's middle as soon as it lands (pale, a ring round it); the
+    ghosts flicker as the page comes over, and as it lands they are black blots for
+    a moment (harmful) - then pale stains. marks: (t_show, (x, y)) of the stains, in
+    the arena's own frame; cx: the sheet's middle there."""
+
+    HOLD = .14
+    R = 22.0
+
+    def __init__(self, cx, marks, t_print, t_turn, seed=0):
+        self.cx, self.marks, self.tp, self.tt = cx, sorted(marks), t_print, t_turn
+        rng = np.random.default_rng(seed)
+        self.jag = rng.uniform(0, 1, (len(self.marks), 16))
+        self.t0 = self.marks[0][0]
+        self.t1 = t_print + 1.6
+        self.impact = None
+
+    def draw(self, c):
+        t = c.t
+        if t < self.tp:                                    # the fold it will print across: down the middle
+            g = clamp((t - self.t0) / .15)
+            fl = .55 + .45 * math.sin(t * 64) if t >= self.tt - .04 else 1.0
+            for y in range(-20, 500, 16):
+                c.line("art", [(self.cx, y), (self.cx, y + 8)], 2, fade_gray(70 * fl, g))
+        for k, (ts, (x, y)) in enumerate(self.marks):
+            if t < ts:
+                continue
+            gx = 2 * self.cx - x
+            pts = jagged_circle(gx, y, self.R, self.jag[k], 16)
+            if t < self.tp:                                # its ghost: faint, a dashed ring round it
+                u = clamp((t - ts) / .1)
+                fl = .55 + .45 * math.sin(t * 64 + k) if t >= self.tt - .04 else 1.0
+                c.poly("art", jagged_circle(gx, y, self.R * u, self.jag[k], 16), fade_gray(26 * fl, 1))
+                rr = (self.R + 5) * u
+                for q in range(12):
+                    a0 = q / 12 * math.tau + t * 1.5
+                    c.line("art", [(gx + math.cos(a0) * rr, y + math.sin(a0) * rr),
+                                   (gx + math.cos(a0 + .3) * rr, y + math.sin(a0 + .3) * rr)], 2, fade_gray(110 * fl, 1))
+                continue
+            a = t - self.tp
+            if a < self.HOLD:                              # printed: black
+                c.poly("art", pts, 255)
+                c.poly("haz", jagged_circle(gx, y, self.R - 2, self.jag[k], 16), 255)
+                if a < .12:
+                    c.ring("top", gx, y, self.R + 22 * a / .12, 2, fade_gray(90, 1 - a / .12))
+            else:                                          # then a pale stain, fading
+                c.poly("art", pts, fade_gray(60, 1 - clamp((a - self.HOLD - 1.0) / .4)))
 
 
 class Piston(Attack):
@@ -3743,8 +5276,13 @@ class HuntingInk(Attack):
     SWEEP = .1                 # the one slash runs round the whole ring in this long
 
     def __init__(self, center, t_burst, target, t_cut, t_end, lunges=(), n=8, tele=.42, seed=0,
-                 launches=(), confirms=(), home=None):
-        self.launches, self.confirms = list(launches), list(confirms)
+                 confirms=(), launches=(), windups=(), t_land=None, home=None, soul_path=None, zoom=None,
+                 t_knock=None):
+        self.confirms, self.launches, self.windups = list(confirms), list(launches), list(windups)
+        self.t_land = t_land if t_land is not None else t_cut + .6
+        self.t_knock = t_knock if t_knock is not None else t_cut + self.SWEEP + .02
+        self.soul_path = soul_path or target              # (after the cut: the soul's smooth path)
+        self.zoom = zoom or (lambda t: 1.0)               # the camera's zoom (the knock is laid out on screen)
         self.home = np.asarray(home if home is not None else center, float)
         self.C = np.asarray(center, float)
         self.tb, self.tc, self.te, self.n, self.tele = t_burst, t_cut, t_end, n, tele
@@ -3809,82 +5347,94 @@ class HuntingInk(Attack):
         self.t0, self.t1 = t_burst - tele, t_end + .2
         self.impact = None
         self.overscan = True                              # also drawn past the screen (scene.overscan)
-        # after the cut: the drops are only nicked - each flinches and cracks, then
-        # the whole ring goes on circling the soul for one more full turn, widening,
-        # and scatters to its spots on an arc over the paper round the FIGHT button;
-        # from there they fly at the soul one by one, trailing ink (launches), each
-        # smashed by a confirmed bar of the aim meter (confirms)
+        # after the cut: the drops are only nicked - each stops dead and shivers as the
+        # slash goes through it, flinches and cracks - and once it has gone all the way
+        # round, the blow knocks the whole ring out at once: it flies open into a wide ring round the soul,
+        # spun faster by the blow, and goes on wheeling round it, easing to a gentle
+        # turn (the camera frames it - cinema). One a note, a drop draws back out of the
+        # ring and swoops in on the soul, faster and faster, smashed by a confirmed bar
+        # of the aim meter (confirms) the moment it gets there. Each comes in from a
+        # golden angle on round from the one before: from every side in turn
         self.after = None
-        if self.cut_c is not None and self.launches:
+        if self.cut_c is not None and self.confirms and self.launches:
             ic = [min(len(self.ts) - 1, int((self.cut_t[k] - t_burst) * 120)) for k in range(n)]
             p_cut = np.array([P[ic[k], k] for k in range(n)])
-            rel0 = np.array([p_cut[k] - np.asarray(target(float(self.cut_t[k])), float) for k in range(n)])
-            th0 = np.arctan2(rel0[:, 1] / self.FLAT1, rel0[:, 0])
-            r0 = np.hypot(rel0[:, 0], rel0[:, 1] / self.FLAT1)
-            fan = np.radians(np.linspace(-86, -18, n))     # the arc over the paper, round the FIGHT button
-            slots = []
-            for i, a in enumerate(fan):
-                R = 245 + 55 * (i % 2) + 10 * rng.random()
-                h = self.home + np.array([math.cos(a) * R, math.sin(a) * R * .78])
-                h = np.array([float(np.clip(h[0], 60, 600)), float(np.clip(h[1], 255, 392))])
-                slots.append(h - self.home)                # (relative to where the soul comes to rest)
-            # each drop takes the spot that lies the same way round from the soul as it
-            # does when the turn ends, so they scatter without crossing
-            end_ang = np.arctan2(np.sin(th0), np.cos(th0))
-            slot_ang = np.array([math.atan2(v[1], v[0]) for v in slots])
-            ds, ss = np.argsort(end_ang), np.argsort(slot_ang)
-            wrap = lambda x: (x + math.pi) % math.tau - math.pi
-            best = min(range(n), key=lambda o: sum(abs(wrap(end_ang[ds[i]] - slot_ang[ss[(i + o) % n]]))
-                                                     for i in range(n)))
-            seq = [3, 4, 2, 5, 1, 6, 0, 7][:n]            # launched from the middle of the arc outwards
-            self.after = {}
-            for i in range(n):
-                k, slot = int(ds[i]), int(ss[(i + best) % n])
-                order = seq.index(slot) if slot in seq else slot
-                L = self.launches[min(order, len(self.launches) - 1)]
-                S_ = self.confirms[min(order, len(self.confirms) - 1)] if self.confirms else t_end
-                self.after[k] = dict(tc=float(self.cut_t[k]), th0=float(th0[k]), r0=float(r0[k]),
-                                     rel=np.asarray(slots[slot], float), L=L, S=S_)
+            rel0 = np.array([p_cut[k] - np.asarray(self.soul_path(float(self.cut_t[k])), float) for k in range(n)])
+            th0 = np.arctan2(rel0[:, 1], rel0[:, 0])
+            r0 = np.hypot(rel0[:, 0], rel0[:, 1])
+            m = min(n, len(self.confirms))
+            self.after = {k: dict(tc=float(self.cut_t[k]), tk=self.t_knock, th0=float(th0[k]), r0=float(r0[k]),
+                                  cut=p_cut[k].copy(), S=t_end, L=t_end, W=t_end) for k in range(n)}
+            # which drop comes in when: so that each comes from a golden angle on
+            cost = np.zeros((n, m))
+            for k in range(n):
+                d = self.after[k]
+                for i in range(m):
+                    W, L = self.windups[i], self.launches[i]
+                    end = self._ring_angle(d, W) + self._ring_spin(d, W) * (self.confirms[i] - W) + self.SWOOP
+                    cost[k, i] = ((end - (math.radians(-40) + i * self.GOLDEN) + math.pi) % math.tau - math.pi) ** 2
+            from scipy.optimize import linear_sum_assignment
+            for k, i in zip(*linear_sum_assignment(cost)):
+                self.after[int(k)].update(S=self.confirms[int(i)], L=self.launches[int(i)], W=self.windups[int(i)])
 
-    SWIRL = .5          # s for the one more turn round the soul after the cut, widening
-    R_SWIRL = 82.0      # ...out to this radius (the soul is near the corner: keep them on screen)
-    SCATTER = .32       # s to go from the ring to its spot on the arc
+    CONTACT = 21.0      # px from the soul when its bar is confirmed and it is smashed
+    GOLDEN = math.radians(137.5)  # each comes in from this far on round from the one before
+    RING = 175.0        # px on screen: the ring the cut knocks them out towards - still drifting out when they go
+    KNOCK = ((.6, .06), (.4, .55))  # (share, s): a hard blow that dies away fast, then a long drift
+    SPIN = (4.8, 2.6)   # rad/s just after the blow, rad/s it has slowed to by t_land (faster than the soul
+                        # eases back onto FIGHT, or drops on one side would stall against it)
+    SWOOP = 1.4         # rad it curls on round as it swoops in (on top of the ring's own turn)
+    PULL = 30.0         # px it recoils out of the ring before it goes
 
-    RECOIL = .14        # s it pulls back, gathering itself, before it flies
-    DASH = .24          # s from its spot to the soul (eased: off slowly, fast, easing in) - smashed as it gets there
+    def _knock(self, d, t):
+        """(how far through its knock-out: 0..1, how long the knock-out takes)."""
+        T = max(.2, self.t_land - d["tk"])
+        return clamp((t - d["tk"]) / T), T
 
-    def rel_before_launch(self, k, t):
-        """Where a cut drop is, relative to the soul, before it flies."""
-        d = self.after[k]
-        a = t - d["tc"]
-        u = clamp(a / self.SWIRL)
-        r = d["r0"] + (self.R_SWIRL - d["r0"]) * out_cubic(u)
-        th = d["th0"] + math.tau * smooth(u)                # one full turn, the way the ring spun
-        ring = np.array([math.cos(th) * r, math.sin(th) * r * self.FLAT1])
-        v = smooth((a - self.SWIRL) / self.SCATTER)
-        rel = ring + (d["rel"] - ring) * v
-        if v >= 1:                                         # waiting, creeping in a little, trembling more as its turn comes
-            t_wait = d["tc"] + self.SWIRL + self.SCATTER
-            rel = rel * (1 - .12 * smooth((t - t_wait) / max(.1, d["L"] - self.RECOIL - t_wait)))
-            w = .8 + 2.2 * smooth((t - (d["L"] - .6)) / .6)
-            rel = rel + np.array([w * math.sin(t * 57 + k), w * math.cos(t * 49 + 2 * k)])
-        rc = clamp((t - (d["L"] - self.RECOIL)) / self.RECOIL)
-        if rc > 0:                                         # the recoil: it draws back before it flies
-            rel = rel * (1 + .16 * math.sin(math.pi / 2 * rc))
-        return rel
+    def _ring_angle(self, d, t):
+        u, T = self._knock(d, t)
+        w0, w1 = self.SPIN
+        return d["th0"] + w1 * max(0.0, t - d["tk"]) + (w0 - w1) * T * (1 - (1 - u) ** 3) / 3
+
+    def _ring_spin(self, d, t):
+        u, _ = self._knock(d, t)
+        w0, w1 = self.SPIN
+        return w1 + (w0 - w1) * (1 - u) ** 2
+
+    def _ring_radius(self, d, t, k):
+        """Knocked out hard and flying out, slower and slower - never coming to rest:
+        the first of them recoils at t_land with the ring still opening. It is the
+        radius on screen that eases out like this: the camera pulls back as the ring
+        flies open, and would eat up the blow - the radius in the world makes up for it."""
+        a = max(0.0, t - d["tk"])
+        s0 = d["r0"] * self.zoom(d["tk"])
+        s = s0 + (self.RING - s0) * sum(w * (1 - math.exp(-a / tau)) for w, tau in self.KNOCK)
+        return s / self.zoom(t) * (1 + .03 * math.sin(2.3 * t + 1.7 * k))     # (the ring breathes a little)
+
+    def recoil(self, d, t):
+        """0 .. 1 through its recoil (W .. L), else None."""
+        return clamp((t - d["W"]) / (d["L"] - d["W"])) if d["W"] <= t < d["L"] else None
 
     def pos_after(self, k, t):
-        """A cut drop: one more turn round the soul with the ring, out to its spot
-        on the arc, then (from its launch) flying at the soul, faster and faster -
-        smashed before it gets there."""
+        """A cut drop: knocked out with the ring and wheeling round the soul on it;
+        then (on its eighths) recoiling - drawing back out of the ring, still going
+        round with it - and swooping at the soul: curling on round, then in, faster
+        and faster - smashed as it gets there, on its note."""
         d = self.after[k]
-        S = np.asarray(self.target(t), float)
-        if t < d["L"]:
-            return S + self.rel_before_launch(k, t)
-        rel = self.rel_before_launch(k, d["L"] - 1e-4)
-        u = clamp((t - d["L"]) / max(.03, d["S"] - d["L"]))
-        e = u * u * (3 - 2 * u) * .7 + u ** 2 * .3         # off from the recoil slowly, fast, easing in at the end
-        return S + rel * (1 - .82 * e)
+        S = np.asarray(self.soul_path(t), float)
+        W, L = d["W"], d["L"]
+        if t <= W:
+            phi, r = self._ring_angle(d, t), self._ring_radius(d, t, k)
+        else:
+            w = self._ring_spin(d, W)
+            rc = clamp((min(t, L) - W) / (L - W))
+            phi = self._ring_angle(d, W) + w * (min(t, L) - W)                # (still turning with the ring)
+            r = self._ring_radius(d, t, k) + self.PULL * smooth(rc)            # it draws back (the ring still opening)
+            if t > L:                                      # ...then swoops: round first, then in, faster and faster
+                u = clamp((t - L) / (d["S"] - L))
+                phi += w * (t - L) + self.SWOOP * u ** 1.5
+                r -= (r - self.CONTACT) * u ** 3.2
+        return S + np.array([math.cos(phi) * r, math.sin(phi) * r])
 
     def draw_after(self, c, t, k):
         d = self.after[k]
@@ -3909,19 +5459,33 @@ class HuntingInk(Attack):
             return
         x, y = self.pos_after(k, t)
         a = t - d["tc"]
-        flying = t >= d["L"]
         # velocity (for the stretch and the trail)
         px, py = self.pos_after(k, max(d["tc"], t - 1 / 120))
         vx, vy = (x - px) * 120, (y - py) * 120
         sp = math.hypot(vx, vy)
+        if t < d["tk"]:                                    # stopped dead by the slash, shivering, till the blow
+            x += 1.5 * math.sin(t * 90 + 2.1 * k)
+            y += 1.5 * math.cos(t * 77 + 1.3 * k)
         R = 8.0
         if a < .15:                                        # it flinches at the cut - only nicked
             R *= 1 - .22 * math.sin(math.pi * a / .15)
-        rc = (t - (d["L"] - self.RECOIL)) / self.RECOIL
-        if 0 <= rc < 1:                                    # ...gathers itself as it draws back
-            R *= 1 + .3 * math.sin(math.pi / 2 * rc)
+        rc = self.recoil(d, t)
+        if rc is not None:                                 # it gathers itself as it recoils
+            R *= 1 + .5 * math.sin(math.pi / 2 * rc)
+        la = t - d["L"]
+        if 0 <= la < .22:                                  # the kick as it springs: a ripple where it left,
+            q = la / .22                                   # ink thrown back the other way (light: harmless)
+            lx, ly = self.pos_after(k, d["L"])
+            sx, sy = self.soul_path(d["L"])
+            ba = math.atan2(ly - sy, lx - sx)
+            c.ring("top", lx, ly, 7 + 34 * out_cubic(q), 2, fade_gray(150, 1 - q))
+            for j, (r1, r2, r3) in enumerate(self.spl[k]):
+                ang = ba + (r1 - .5) * 1.5
+                dd = 8 + 46 * out_cubic(q) * (.55 + r3)
+                c.circle("top", lx + math.cos(ang) * dd, ly + math.sin(ang) * dd, (2 + 2.2 * r2) * (1 - .7 * q),
+                         fade_gray(170, 1 - q))
         # its trail: a tapering line of wet ink along where it has been
-        n_tr, dt_tr = (14, .006) if flying else (6, .016)
+        n_tr, dt_tr = 14, .006
         trail = [self.pos_after(k, max(d["tc"], t - j * dt_tr)) for j in range(n_tr + 1)]
         for j in range(n_tr):
             f = 1 - j / n_tr
@@ -3935,16 +5499,15 @@ class HuntingInk(Attack):
             if w < 1:
                 break
             c.line("top", [tuple(trail[j]), tuple(trail[j + 1])], w, fade_gray(245, .55 + .45 * f))
-        if flying:                                         # beads of ink it sheds as it flies
-            for j in range(4):
-                ts_ = d["L"] + .05 + .07 * j + .02 * self.spl[k][j % 5][0]
-                age = t - ts_
-                if 0 <= age < .3:
-                    bx, by = self.pos_after(k, ts_)
-                    r1, r2, r3 = self.spl[k][j % 5]
-                    bx += (r1 - .5) * 10 * (1 + age * 4)
-                    by += (r2 - .5) * 10 * (1 + age * 4) + 40 * age * age
-                    c.circle("top", bx, by, (2.5 + 2 * r3) * (1 - age / .3), fade_gray(240, 1 - age / .3))
+        for j in range(7):                                 # beads of ink it sheds: knocked off, and coming in
+            ts_ = (d["tk"] + .02 + .05 * j if j < 4 else d["L"] + .02 + .04 * (j - 4)) + .02 * self.spl[k][j % 5][0]
+            age = t - ts_
+            if 0 <= age < .3:
+                bx, by = self.pos_after(k, ts_)
+                r1, r2, r3 = self.spl[k][j % 5]
+                bx += (r1 - .5) * 10 * (1 + age * 4)
+                by += (r2 - .5) * 10 * (1 + age * 4) + 40 * age * age
+                c.circle("top", bx, by, (2.5 + 2 * r3) * (1 - age / .3), fade_gray(240, 1 - age / .3))
         # the drop itself: a living blob of ink - its outline always slowly moving,
         # drawn out into a teardrop along its flight (round head, pointed tail)
         ux, uy = (vx / sp, vy / sp) if sp > 1 else (1.0, 0.0)
@@ -3968,15 +5531,16 @@ class HuntingInk(Attack):
         c.poly("top", pts, 245)
         gx, gy = x - ux * R * .2 - R * .32, y - uy * R * .2 - R * .38       # a wet glint
         c.circle("top", gx, gy, max(2.0, R * .45), 150)
-        if a < .3:                                         # the few chips the cut knocked off
+        if a < .3:                                         # the few chips the cut knocked off, and its slash -
+            cx0, cy0 = d["cut"]                            # where it was cut (they do not fly off with it)
             for r1, r2, r3 in self.spl[k]:
                 q = a / .3
                 ang = (r1 - .5) * 2.2 + (math.pi * .25 if r2 > .5 else -math.pi * .75)
                 dd = 6 + 26 * out_cubic(q) * (.5 + r3)
-                c.circle("top", x + math.cos(ang) * dd, y + math.sin(ang) * dd + 30 * q * q, 1.5 + 1.5 * r3,
+                c.circle("top", cx0 + math.cos(ang) * dd, cy0 + math.sin(ang) * dd + 30 * q * q, 1.5 + 1.5 * r3,
                          fade_gray(230, 1 - q))
             spr = self.slash(min(5, int(a / .05)))
-            c.sprites.append((spr, int(x - spr.w / 2 + self.slash_dx[k]), int(y - spr.h / 2), 1.0, None))
+            c.sprites.append((spr, int(cx0 - spr.w / 2 + self.slash_dx[k]), int(cy0 - spr.h / 2), 1.0, None))
 
     def radius(self, t):
         """Wide once it has rung the soul, then closing in slowly and smoothly all

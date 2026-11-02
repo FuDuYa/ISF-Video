@@ -16,7 +16,7 @@ from PIL import Image, ImageDraw
 
 from common import W, H, clamp, smooth, out_cubic
 
-PAD = 160
+PAD = 220
 EASE = {
     "smooth": smooth,
     "linear": clamp,
@@ -67,6 +67,177 @@ def is_identity(p) -> bool:
     return (abs(p["zoom"] - 1) < 1e-4 and abs(p["pitch"]) < 1e-3 and abs(p["yaw"]) < 1e-3
             and abs(p["roll"]) < 1e-3 and abs(p["focus"][0] - 320) < .01
             and abs(p["focus"][1] - 240) < .01)
+
+
+def page_turn(img: np.ndarray, phi: float, cx: float, cy: float, f: float = 1100.0) -> np.ndarray:
+    """The picture as a page turned over about the vertical line x = cx by phi (rad):
+    at pi it is mirrored; on the way it swings up at us (perspective) and darkens
+    as it goes edge-on."""
+    phi = phi % (2 * math.pi)
+    if min(phi, 2 * math.pi - phi) < 1e-4:
+        return img
+    h, w = img.shape
+    out = np.zeros_like(img)
+    xs = np.arange(w, dtype=float)
+    if abs(phi - math.pi) < 1e-4:                         # turned right over: mirrored
+        src = np.round(2 * cx - xs).astype(int)
+        ok = (src >= 0) & (src < w)
+        out[:, ok] = img[:, src[ok]]
+        return out
+    c, s = math.cos(phi), abs(math.sin(phi))
+    d = cx - xs                                           # from the hinge
+    sc = f / (f - np.abs(d) * s)                          # (it comes up at us)
+    xp = cx - d * c * sc
+    order = np.argsort(xp)
+    src = np.interp(xs, xp[order], xs[order])
+    okx = (xs >= xp.min()) & (xs <= xp.max())
+    si = np.clip(np.round(src).astype(int), 0, w - 1)
+    sy = np.round(cy + (np.arange(h)[:, None] - cy) / sc[si][None, :]).astype(int)
+    ok = okx[None, :] & (sy >= 0) & (sy < h)
+    yy, xx = np.nonzero(ok)
+    out[yy, xx] = img[sy[yy, xx], si[xx]]
+    return (out * (.55 + .45 * abs(c))).astype(np.uint8)
+
+
+def sheet_fold(img: np.ndarray, M, b, fold, pad: float) -> np.ndarray:
+    """The page's folds (choreo.sheet_state) on a picture padded by `pad`: the
+    finished ones (p -> M p + b on screen), then the one under way - turned over
+    about its line (a page turn, the line stood upright for it) and carried along."""
+    h, w = img.shape
+    out = img
+    if not (np.array_equal(M, np.eye(2)) and np.allclose(b, 0)):
+        yy, xx = np.mgrid[0:h, 0:w]
+        qx, qy = xx - pad - b[0], yy - pad - b[1]
+        sx = np.round(M[0, 0] * qx + M[1, 0] * qy + pad).astype(int)     # (M is orthogonal: M^-1 = M^T)
+        sy = np.round(M[0, 1] * qx + M[1, 1] * qy + pad).astype(int)
+        ok = (sx >= 0) & (sx < w) & (sy >= 0) & (sy < h)
+        out = np.zeros_like(img)
+        out[ok] = img[sy[ok], sx[ok]]
+    if fold is not None:
+        (px, py), deg, phi, d = fold
+        cx, cy = px + pad, py + pad
+        rot = deg - 90.0                                  # (turns the fold line upright)
+        im = Image.fromarray(out)
+        if abs(rot) > 1e-6:
+            im = im.rotate(rot, resample=Image.NEAREST, center=(cx, cy), fillcolor=0)
+        a = page_turn(np.asarray(im), phi, cx, cy)
+        im = Image.fromarray(a)
+        if abs(rot) > 1e-6:
+            im = im.rotate(-rot, resample=Image.NEAREST, center=(cx, cy), fillcolor=0)
+        out = np.asarray(im)
+        dx, dy = int(round(d[0])), int(round(d[1]))
+        if dx or dy:
+            sh = np.zeros_like(out)
+            ys, yd = (slice(0, h - dy), slice(dy, h)) if dy >= 0 else (slice(-dy, h), slice(0, h + dy))
+            xs, xd = (slice(0, w - dx), slice(dx, w)) if dx >= 0 else (slice(-dx, w), slice(0, w + dx))
+            sh[yd, xd] = out[ys, xs]
+            out = sh
+    return out
+
+
+def _quad_fill(out, q, pad, src=None, img=None, value=0, shade=1.0):
+    """Fill the quad q (4 x 2, screen) on the padded picture `out`: with the rect
+    `src` of `img` mapped onto it (perspective), or a flat value."""
+    h, w = out.shape
+    Q = np.asarray(q, float) + pad
+    x0, y0 = np.floor(Q.min(0)).astype(int)
+    x1, y1 = np.ceil(Q.max(0)).astype(int) + 1
+    x0, y0, x1, y1 = max(0, x0), max(0, y0), min(w, x1), min(h, y1)
+    if x1 <= x0 or y1 <= y0:
+        return
+    # homography from the unit square to the quad, inverted
+    U = np.array([[0, 0], [1, 0], [1, 1], [0, 1]], float)
+    A = []
+    for (u, v), (x, y) in zip(U, Q):
+        A.append([u, v, 1, 0, 0, 0, -u * x, -v * x, -x])
+        A.append([0, 0, 0, u, v, 1, -u * y, -v * y, -y])
+    _, _, Vt = np.linalg.svd(np.asarray(A))
+    Hm = Vt[-1].reshape(3, 3)
+    try:
+        Hi = np.linalg.inv(Hm)
+    except np.linalg.LinAlgError:
+        return
+    yy, xx = np.mgrid[y0:y1, x0:x1]
+    den = Hi[2, 0] * xx + Hi[2, 1] * yy + Hi[2, 2]
+    den = np.where(np.abs(den) < 1e-9, 1e-9, den)
+    uu = (Hi[0, 0] * xx + Hi[0, 1] * yy + Hi[0, 2]) / den
+    vv = (Hi[1, 0] * xx + Hi[1, 1] * yy + Hi[1, 2]) / den
+    m = (uu >= 0) & (uu <= 1) & (vv >= 0) & (vv <= 1)
+    if not m.any():
+        return
+    blk = out[y0:y1, x0:x1]
+    if src is None:
+        blk[m] = value
+    else:
+        sx0, sy0, sx1, sy1 = src
+        sx = np.clip((sx0 + uu * (sx1 - sx0) + pad).astype(int), 0, img.shape[1] - 1)
+        sy = np.clip((sy0 + vv * (sy1 - sy0) + pad).astype(int), 0, img.shape[0] - 1)
+        v = img[sy[m], sx[m]]
+        blk[m] = v if shade >= 1 else (v * shade).astype(out.dtype)
+
+
+def paper_pack(img: np.ndarray, geo, pad: float, ghosts=()) -> np.ndarray:
+    """M38's folding up (choreo.pack_geometry): the sheet as it is on screen (img) cut
+    into cells and drawn where they lie now - face up showing what is on them, face
+    down their back (blank paper, darker the more edge-on) - with a hairline at
+    every fold; ghosts: the packet a moment before, dimmer, behind it (hopping)."""
+    out = np.zeros_like(img)
+    for g, dim in list(ghosts) + [(geo, 1.0)]:
+        cells, _ = g
+        layer = np.zeros_like(img) if dim < 1 else out
+        for q, front, src, flat in cells:                  # (turned up off the table: in shadow)
+            if front:
+                _quad_fill(layer, q, pad, src, img, shade=.7 + .3 * flat)
+            else:
+                _quad_fill(layer, q, pad, value=int(140 + 70 * flat))
+        im = Image.fromarray(layer)
+        d = ImageDraw.Draw(im)
+        for q, *_ in cells:                                # the folds: hairlines
+            d.line([tuple(p + pad) for p in q] + [tuple(q[0] + pad)], fill=120, width=1)
+        layer = np.asarray(im)
+        if dim < 1:
+            m = layer > 0
+            out[m] = np.maximum(out[m], (layer[m] * dim).astype(out.dtype))
+        else:
+            out = layer.copy()
+    return out
+
+
+def pack_bursts(img: np.ndarray, knocks, pad: float) -> np.ndarray:
+    """M38's packet landing hard (choreo.PACK_KNOCKS): its outline flashes outwards
+    and ink is thrown off its edges - white off the paper. knocks: (how long ago,
+    its box on screen then, how hard, seed)."""
+    if not knocks:
+        return img
+    lay = Image.new("L", (img.shape[1], img.shape[0]), 0)
+    d = ImageDraw.Draw(lay)
+    for a, (x0, y0, x1, y1), pw, seed in knocks:
+        life = .16 + .14 * pw
+        q = a / life
+        if q >= 1:
+            continue
+        x0, y0, x1, y1 = x0 + pad, y0 + pad, x1 + pad, y1 + pad
+        if pw >= .9 and a < .07:                           # (a fold slammed down:) the outline, flung outwards
+            g = 3 + 16 * pw * (a / .07) ** .6
+            d.rectangle([x0 - g, y0 - g, x1 + g, y1 + g], outline=int(235 * (1 - a / .07)), width=2 + int(2 * pw))
+        rng = np.random.default_rng(seed)
+        per = 2 * (x1 - x0) + 2 * (y1 - y0)
+        for r1, r2, r3, r4 in rng.uniform(0, 1, (int(4 + 20 * pw ** 1.5), 4)):
+            s_ = r1 * per
+            if s_ < x1 - x0:
+                pt, n = (x0 + s_, y0), (0, -1)
+            elif s_ < x1 - x0 + y1 - y0:
+                pt, n = (x1, y0 + s_ - (x1 - x0)), (1, 0)
+            elif s_ < 2 * (x1 - x0) + y1 - y0:
+                pt, n = (x1 - (s_ - (x1 - x0) - (y1 - y0)), y1), (0, 1)
+            else:
+                pt, n = (x0, y1 - (s_ - 2 * (x1 - x0) - (y1 - y0))), (-1, 0)
+            dist = 4 + (20 + 60 * pw) * (1 - (1 - q) ** 3) * (.4 + r2)
+            ang = math.atan2(n[1], n[0]) + (r3 - .5) * 1.3
+            r = (1.5 + 3 * r4) * (.6 + .4 * pw) * (1 - .7 * q)
+            cx, cy = pt[0] + math.cos(ang) * dist, pt[1] + math.sin(ang) * dist
+            d.ellipse([cx - r, cy - r, cx + r, cy + r], fill=int(235 * (1 - q)))
+    return np.maximum(img, np.asarray(lay))
 
 
 def warp(frame: np.ndarray, p, plane: np.ndarray | None = None) -> np.ndarray:

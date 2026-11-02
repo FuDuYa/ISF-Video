@@ -23,7 +23,7 @@ import numpy as np
 import actions
 import attacks as A
 from chart import parse_chart, Note
-from common import ROOT, clamp, key_angle, key_vec, smooth
+from common import ROOT, clamp, key_angle, key_vec, out_cubic, smooth
 
 BPM = 202.0
 MEAS = 240.0 / BPM
@@ -55,7 +55,7 @@ CANVAS = (lambda: (CANVAS_SET, SECTION_END))   # from here on the arena is a can
 # button's edge is enough to trigger it: the soul grazes FIGHT's right edge only
 # on the M28 downbeat (the hardest hit of the long hold), just as the ring is
 # about to touch it: one press, and one slash cuts the whole ring
-REST_RECT = (-150, 226, 790, 630)              # the sheet runs on past the screen (scene.overscan)
+REST_RECT = (-220, 226, 860, 700)              # the sheet runs on past the screen (scene.overscan)
 # where the soul touches FIGHT: walking straight down-left from KNOCK_TO, the
 # first spot where the heart overlaps fight1.png (at 32,432) - by one pixel, on
 # the middle of its right edge (the step before, it is still clear of it)
@@ -72,29 +72,72 @@ _WALK_STEPS = int(PRESS_T * 60) - int(round(WALK_T * 60))
 # that it still touches the button only on PRESS_T
 WALK_SPEED = max(abs(KNOCK_TO[0] - FIGHT_SOUL[0]), abs(KNOCK_TO[1] - FIGHT_SOUL[1])) / _WALK_STEPS
 WALK_ARRIVE = (int(round(WALK_T * 60)) + _WALK_STEPS) / 60
+KNOCK_T = PRESS_T + .12                         # the slash has gone all the way round: the blow knocks the cut ring out
+# after the cut it snaps back onto FIGHT's menu spot - fast, then slowing - just
+# after the blow (by then the ring is wide enough for it to dart across inside it)
+SETTLE = (KNOCK_T + .12, .25)                   # (start, duration) of going back onto it
+# ...but the ring it is knocked out round (and the camera) follow it over smoothly,
+# just in time for the M29 press: a ring dragged along at the soul's snap would
+# stall the drops on one side against it (a twitch). The ring is wide by then:
+# the soul is well inside it all the way
+RING_SETTLE = (PRESS_T + .1, tm(29) - .04 - (PRESS_T + .1))
+
+
+def ring_centre(t):
+    """The middle of the cut ring after the cut: the soul's spot, eased over from the
+    button's edge to the menu spot more slowly than the soul snaps there."""
+    u = smooth(clamp((t - RING_SETTLE[0]) / RING_SETTLE[1]))
+    return (FIGHT_SOUL[0] + (MENU_SOUL[0] - FIGHT_SOUL[0]) * u, FIGHT_SOUL[1] + (MENU_SOUL[1] - FIGHT_SOUL[1]) * u)
+
+
 SOUL_SCRIPT_REST = [dict(kind="fly", t0=tm(24.75), dur=KNOCK_DUR, to=KNOCK_TO, hold=WALK_T),
-                    dict(kind="walk", t0=WALK_T, to=FIGHT_SOUL, hold=PRESS_T + .22, speed=WALK_SPEED),
-                    dict(kind="fly", t0=PRESS_T + .22, dur=.55, to=MENU_SOUL, hold=tm(32.75), ease="smooth")]
+                    dict(kind="walk", t0=WALK_T, to=FIGHT_SOUL, hold=SETTLE[0], speed=WALK_SPEED),
+                    dict(kind="fly", t0=SETTLE[0], dur=SETTLE[1], to=MENU_SOUL, hold=tm(32.75))]
 SOUL_SCRIPT = list(SOUL_SCRIPT_REST)      # (build() puts the dodge out of the paper box in front)
 CLOSE_IN = [tm(25.75 + k / 4) for k in range(9)]   # the ring lunges in on every beat up to the press
-# after the cut (M28-M33.5): the cut ring is not destroyed - every drop cracks and
-# is knocked away; the soul eases back onto FIGHT (the menu spot); the drops come
-# alive again and fly at it one by one on the M28.5 eighths; FIGHT is pressed on
-# the M29.5 hold and UT's aim meter comes up - every confirmed bar (M29.625-M30.75)
-# smashes one drop. Then the player cuts the pure black over the paper (M31-M32.9375):
+# after the cut (M28-M33.5): the cut ring is not destroyed - the cut knocks every
+# drop flying, and each swings round in a wide loop and comes back at the soul (now
+# eased back onto FIGHT, the menu spot). FIGHT is pressed again on the M29 hold and
+# UT's aim meter comes up; every note from M29.125 to M30.75 confirms a bar and
+# smashes one drop as it gets back (so there are as many drops as notes). Then the player cuts the pure black over the paper (M31-M32.9375):
 # piece by piece it comes off - it was a curtain of black ink, and on the M33
 # downbeat the rest falls: Ink Sans was hiding behind it all along (he stands
 # there through M33; the old placeholder takes over from M34)
 SECTION_END = tm(48)                            # the canvas lasts through the descent (M32.75-M48)
-SETTLE = (PRESS_T + .22, .45)                   # (start, duration) of easing back onto it
 
-AIM_OPEN = tm(29.5)                             # FIGHT pressed again: the aim meter
-CONFIRMS = [tm(m) for m in (29.625, 29.75, 29.875, 30.125, 30.25, 30.375, 30.5, 30.75)]
-LAUNCH = [t - .24 for t in CONFIRMS]           # each drop: a recoil, then an eased run at the soul - smashed as it arrives
+_CHART_T = sorted({round(n.t, 4) for n in parse_chart(ROOT / "maidata.txt", OFFSET)[0]})
+AIM_OPEN = tm(29)                               # FIGHT pressed again: the aim meter
+EIGHTH = MEAS / 8
+# while the cut ring wheels round the soul on FIGHT the camera follows the ring's
+# middle, framing it left of the middle and a little down (cinema), so that the
+# whole wide ring is in shot round it - the sheet runs on past the screen (scene.overscan)
+SWIRL_OFF = (100, -15)                          # the camera's focus from the ring's middle
+SWIRL_FOCUS = (MENU_SOUL[0] + SWIRL_OFF[0], MENU_SOUL[1] + SWIRL_OFF[1])
+
+
+def swirl_focus(t):
+    x, y = ring_centre(t)
+    return (x + SWIRL_OFF[0], y + SWIRL_OFF[1])
+
+
+def cam_zoom(t):
+    """The camera's zoom (without its jolts) - the knocked ring is laid out on screen."""
+    import cinema
+    import fx
+    return fx.camera_at(t, cinema.KEYS, [])["zoom"]
+
+
+CONFIRMS = [t for t in _CHART_T if tm(29.125) - 1e-3 <= t < tm(31) - 1e-3]   # every note: a bar, a drop smashed
+# the cut ring flies out from the blow all the way to the M28.5 tap - and there the
+# first drop already recoils (no idle turn in between): each drop recoils for an
+# eighth, then swoops at the soul for four - round, then in - and is smashed on its
+# note, so three or four are swooping in at once, each from its own way
+LAUNCH = [t - 4 * EIGHTH for t in CONFIRMS]
+WINDUP = [t - EIGHTH for t in LAUNCH]
+LAND_T = WINDUP[0]
 CURTAIN_START = PRESS_T                         # the black over the paper is a curtain of ink from here on
 REVEAL = tm(32.75)                              # the last piece is gone as the 5-4-5-4 sixteenths begin: Ink Sans is there
-CURTAIN_CUTS = sorted({round(n.t, 4) for n in parse_chart(ROOT / "maidata.txt", OFFSET)[0]
-                       if tm(31) - 1e-3 <= n.t < REVEAL - 1e-3})   # every note of M31-M32.6875: one more bar
+CURTAIN_CUTS = [t for t in _CHART_T if tm(31) - 1e-3 <= t < REVEAL - 1e-3]   # every note of M31-M32.6875: one more bar
 CURTAIN_PIECE_CUTS = CURTAIN_CUTS[:-1]          # ...each cuts away a piece of the ink over him;
 PARRY_T = CURTAIN_CUTS[-1]                      # the last one is blocked by his brush, blinking in
 FIGHT_SELECT = (WALK_ARRIVE, tm(33.75))        # (the buttons rise away with the sheet in M33)
@@ -102,7 +145,7 @@ PRESSES = [PRESS_T, AIM_OPEN]                   # the cut (its edge just touched
 # Ink Sans is gone while the camera is right inside the canvas (out of shot) - when
 # it pulls back he is not there; he is back while it is pushed in on the FIGHT cut
 # (out of shot again), so he is simply there once it pulls back after it
-INK_GONE = (DEEP_T, PRESS_T + .15)                  # (the camera starts pulling back from PRESS_T + .2)
+INK_GONE = (DEEP_T, PRESS_T + .15)                  # (the camera starts pulling back from PRESS_T + .1)
 
 # the stars' flow over the battle (backdrop.StarRain): one set, one speed; on
 # every turn they all ease to a stop, turn, and ease back up
@@ -150,61 +193,344 @@ A.PAPER_OFFSET = paper_offset
 
 # --------------------------------------------------------------------- the descent
 # M32.75-M48. On the 5-4-5-4 sixteenths the whole sheet - the full width of the
-# screen, the soul on it - drops a little each time, while the buttons and the
-# status bar painted on it stay where they were: they come away from it. Through
-# M33 the camera sinks with the sheet: the buttons, the status bar and Ink Sans
-# rise away, and the sheet gathers into a band across the whole screen (its far
-# edge rolls up from below), carrying the soul; it lands on M34. From M35 it
-# shrinks to half the screen and goes from one side to the other with the
-# phrases (full width again on the breaks and the long slide), while attacks come
-# in from all round it (add_sink). Everything on it is worked out in its own frame
-# (the planner sees it standing still: LOCAL) and moved with it on screen
-# (attacks.ArenaFrame, render.soul_at, scene.sink_paper). No stars here.
+# screen, the soul on it - is yanked down a little each time, while the buttons
+# and the status bar painted on it stay where they were: they come away from it.
+# Through M33 the camera sinks with the sheet: the buttons, the status bar and Ink
+# Sans rise away, and the sheet comes up to fill the whole screen, carrying the
+# soul up to the middle; it lands on M34. Then the sheet is the battle, the whole
+# height of the screen: it folds, jumps from side to side and shakes, and the ink
+# on it is thrown about by every move (add_sink). Everything on it is worked out
+# in its own frame (the planner sees it standing still: LOCAL) and moved with it
+# on screen (attacks.ArenaFrame, render.soul_at, scene.sink_paper). No stars here.
 SINK0 = tm(32.75)
 RISE = (tm(33), tm(33.8))
 ARRIVE = tm(34)
 NEW_END = tm(48)
 LOCAL = False                                   # plan.py: everything in the arena's own frame
-FULL, HALF_W = 640, 300                         # the band's widths: the whole screen / half of it
-_DX0, _DY0 = 0, 80                              # at first the band lies lower: the soul (on FIGHT) is on it
-SOUL_RESETS = [(SINK0, (47, 453 - _DY0))]       # (plan.py: from here the soul is in the arena's frame)
+FULL, HALF_W, BAND_H = 640, 300, 480            # the arena: the whole screen wide / half of it; the screen's height
+_DX0, _DY0 = 0, 226                             # at first it is the sheet under the buttons (its top where the sheet's is)
+SOUL_RESETS = [(SINK0, (47, 453 - _DY0)),       # (plan.py: from here the soul is in the arena's frame...
+               (NEW_END, (320, 313))]           # ...and back in the old box after it)
+LEFT_HALF = (HALF_W - FULL) / 2                 # lx of the sheet's left half (its left edge where the sheet's was)
+JUMP = FULL - HALF_W                            # dx that carries the left half over to the right half of the screen
+FOLDS = [tm(m) for m in (34.125, 34.25, 34.375)]   # the band folds its right end under, a third at a time
+JUMPS = [(tm(35), 1), (tm(35.5), -1), (tm(36), 1)]   # (landing, way): the half jumps across on the pairs
+SLOSH_V = 116.0      # px/s the walls' gaps move at: the soul (120) has to keep running, turning on the M35.5 pair
+SLOSH_GAP = 34       # px: their gaps (the whole heart is 16: 9 px to spare each side)
+NEEDLES = [tm(36.5 + k / 16) for k in range(6)]     # the 2-7-1-8-2-7
+RING_DRAWS = [tm(36.375 + k / 16) for k in range(4)]    # four rings of ink round the soul, from the walls' last two notes...
+RING_FIRES = [tm(36.625 + k / 16) for k in range(4)]    # ...then their beads fly, one ring on each of the last four
+CENTRE_T = tm(36.875)                           # the hold: it folds over to the other half of the screen
+BREAK_T = tm(38.875)                            # the break: folded back over, slamming down on it, for the climax
+# M37 the call (ink shooting up past the soul, a stroke across, the 24ths); M38
+# - where its mirrored answer was - no attacks: the sheet folds itself up small
+# round the soul, note by note, flies off across the screen spinning, and opens
+# out again on the break on the other side, near the edge (pack_geometry); the soul
+# walks to where the run will start from meanwhile (GOALS): when it opens out the
+# soul is at the bottom of the screen, ready to run
+CALL_M = (37,)
+LANE_SP = 52         # px between the beads on M37's lines of ink (the lanes between them: 42 px, the heart 16)
+LANE_STEP = 6.0      # px each line's beads are off the last's (the lanes move down, a step a shot)
+TURN_T = tm(37.875)                             # the hold: the one slow turn, onto M38's first note
+# the climax (M39-M41 so far): from the moment each round starts a sea of ink
+# spikes shot in from off the sheet rises behind the soul and drives it along the
+# sheet as fast as it can run, right through the bar's trill; on its pairs the page
+# is folded over three times, hard - it lies across the screen, slams over, stands
+# up again somewhere else - and the soul starts the next round somewhere else
+# entirely, running another way on screen: up, then down, then to the right (each
+# round sets off from about where the last one ended on the sheet). Little bubbles
+# of ink are shot at it head-on through each sea
+CORE_M = (39, 40, 41, 43, 44, 45)
+CUT_M = 42                                      # between: the sheet cut down round the soul (add_sink)
+PAIR_TURN = .09                                 # s each fold takes (it lands on the note)
+
+
+def core_trill(m):
+    return [tm(m + (6 + 3 * i) / 48) for i in range(6)]
+
+
+def core_pairs(m):
+    return [tm(m + (24 + 6 * j) / 48) for j in range(4)]
+
+
+# (start, how long, the fold line's angle on screen (deg; through the sheet's middle),
+#  where the sheet's middle lands on screen (None: where it is))
+# after the rings the half is flung over to the other side of the screen (onto
+# M37); through M37-M38 it is flung over on the notes - lying across the screen,
+# standing up, from side to side, top to bottom (one slow turn on M37's hold);
+# the break flings it back to the right half. Then each round's pairs: the folds
+# are chosen so that on screen the rounds run up, down, right | left, up, down
+# (RUN_WAY: which way each runs on the sheet itself - up it for the first three,
+# back down it for the last three). M42's pairs: the cut-down sheet opens out
+# again, then one fold (UNFOLD_T, add_sink)
+_E = lambda m: tm(m) - PAIR_TURN
+FOLD_KEYS = [(CENTRE_T, EIGHTH, 90, (150, 240))]
+_PAIR_FOLDS = {39: ((45, (320, 150)), (0, (320, 330)), (-45, (150, 240))),     # -> M40 standing on the left
+               40: ((-45, (320, 330)), (0, (320, 150)), (90, (320, 330))),     # -> M41 lying along the bottom
+               41: ((45, (490, 240)), (90, (150, 240))),                       # -> on the left; then it opens out
+               43: ((-45, (320, 330)), (0, (320, 150)), (90, (320, 330))),     # -> M44 lying along the bottom
+               44: ((45, (150, 240)), (0, (490, 240)), (90, (150, 240))),      # -> M45 standing on the left
+               45: ((0, (490, 240)),)}                                         # -> over to the right, upside down:
+                                                                               # the soul up top, where the slide
+                                                                               # starts; then it opens out (OPEN2_T)
+for _m, _folds in _PAIR_FOLDS.items():
+    _p = core_pairs(_m)
+    FOLD_KEYS += [(_p[j] - PAIR_TURN, PAIR_TURN, deg, target) for j, (deg, target) in enumerate(_folds)]
+# M41's last pair: the half opens out into the whole sheet, the whole screen (a
+# warning on it); M42 the cut; on its first pair the cut-down sheet is whole again
+# (UNFOLD_T), on its second it folds back in half (REFOLD_T) and M43's run starts
+OPEN_T = tm(41.75)
+# (a move that is never seen: while the half lies still on M37 its own frame is put
+# back over the left of the screen, and sheet_state makes up for it on screen - so
+# that when it opens out the whole sheet lies inside the picture it is drawn in)
+SHIFT_T = tm(37.5)
+UNFOLD_T = tm(42.75)                            # the cut-down sheet opens out again (CircleCut)
+OPEN2_T = tm(45.625)                            # M45's second pair: the half opens out into the whole sheet again -
+                                                # the canvas that soaks through and lies down into a pool (plunge)
+REFOLD_T = tm(42.875)
+FOLD_KEYS.sort(key=lambda f: f[0])
+RUN_WAY = (-1, -1, -1, 1, 1, 1)                 # -1: up the sheet (the spikes come from its bottom)
+CUT_AWAY = (125, 55)                            # px from the soul to the middle of M42's cut (add_sink)
+GATE_DY = 36                                    # px between the second wave's gates (add_sink): with
+GATE_AT = 26                                    # the first this far ahead; a row ~12 px thick (what hurts),
+                                                # the heart 14, a 40 px gap - it can weave ~40 px from one
+                                                # gap to the next flat out, and they are 32 apart
+# (plan.py: in these it runs along the line the second wave's gates are laid out on
+# - (start, end, y -> x) - looking a little ahead, like a player who sees the gaps
+# coming; add_sink fills it in)
+LINES = []
+
+
+def core_run(k):
+    """Round k's run: (its start - the sea comes on at once, from the fold it lands
+    on -, the sixteenths it comes in on, through the bar's trill)."""
+    m = CORE_M[k]
+    t0 = {39: BREAK_T, 43: REFOLD_T}.get(m) or core_pairs(m - 1)[2]
+    s16 = MEAS / 16
+    trill = core_trill(m)
+    return t0, [t0 + j * s16 for j in range(int(round((trill[-1] - t0) / s16)) + 1)]
+
+
+# (plan.py: in these the soul runs flat out the sea's way - like a player holding the key)
+RUNS = [(core_run(k)[0], core_run(k)[1][-1] + .1, RUN_WAY[k]) for k in range(len(CORE_M))]
+# (plan.py: in these it walks to a spot on the sheet, nothing else to mind - the
+# start of the first run: when the page lands for the last time it is at the
+# bottom of the screen)
+PACK_SPOT = (150, 400)                          # (M38: where the soul waits, shut in the packet)
+GOALS = [(tm(37.8), BREAK_T, PACK_SPOT)]
+_GOALS0 = list(GOALS)                           # (add_sink adds one: M42, it keeps to the middle of the cut)
+# (plan.py: between one run and the next it stays where it got to - only moving
+# to keep clear - so the next run starts from where the last one ended)
+HOLDS = [(RUNS[k][1], RUNS[k + 1][0]) for k in range(len(RUNS) - 1)] + [(RUNS[-1][1], NEW_END)]
+FOLD_LANDS = [t0 + d for t0, d, _, target in FOLD_KEYS if target is not None]
+
+
+def _reflect(deg):
+    a = math.radians(deg)
+    c2, s2 = int(round(math.cos(2 * a))), int(round(math.sin(2 * a)))
+    return np.array([[c2, s2], [s2, -c2]])
+
+
+def sheet_state(t, pack=True):
+    """The page's folds so far - a render transform (scene): the planner never sees
+    them. (M, b, fold): the finished ones make up p -> M p + b on screen; fold: the
+    one under way - (its line's point and angle, how far over (rad), how far it
+    has moved the sheet so far) - or None. Each comes over faster and faster and
+    slams down on its note."""
+    M, b, cur = np.eye(2, dtype=int), np.zeros(2), None
+    shifted = packed = False
+    for t0, d, deg, target in FOLD_KEYS:
+        if t < t0:
+            break
+        if not shifted and t0 >= SHIFT_T and t >= SHIFT_T and not LOCAL:   # (the unseen move: made up for)
+            b, shifted = b - M @ np.array([-JUMP, 0.0]), True
+        if pack and not packed and t0 >= BREAK_T and t >= BREAK_T and not LOCAL:   # (M38's flight: it has landed)
+            b, packed = b + np.asarray(PACK_MOVE), True
+        x, y, w, h = arena_box(t0)
+        P = M @ np.array([x + w / 2, y + h / 2]) + b      # the sheet's middle on screen as it starts
+        D = (np.asarray(target, float) - P) if target is not None else np.zeros(2)
+        u = clamp((t - t0) / d)
+        if u >= 1:
+            F = _reflect(deg)
+            M, b = F @ M, P + F @ (b - P) + D
+        else:
+            cur = (P, deg, math.pi * u ** 2, D * u ** 2)
+    if not shifted and t >= SHIFT_T and not LOCAL:
+        b = b - M @ np.array([-JUMP, 0.0])
+    if pack and not packed and t >= BREAK_T and not LOCAL:
+        b = b + np.asarray(PACK_MOVE)
+    return M, b, cur
+
+
+# M38: the sheet folds itself up round the soul like a letter - really folding, a
+# half at a time, turning over in depth and showing its back as it comes down over
+# the soul (which is shut in); the first lifts on the hold's start, hangs
+# trembling, and slams down on the next note; three more snap down on the notes
+# after, each one landing with a jolt. The packet winds up, hops across the bottom
+# of the screen on the 24ths - a quarter turn a hop, leaving ghosts - and bursts
+# open on the break on the right half (PACK_MOVE further over). A render overlay
+# (fx.paper_pack) in the screen's frame of the half as it starts: x 0-300, y 0-480,
+# cut into 4 x 4 cells.
+PACK_MOVE = (JUMP, 0.0)
+PACK_CELL = (75.0, 120.0)
+# (start, landing, crease axis ('h': the line y = c, 'v': x = c), c, side that turns over (-1: the lower x/y))
+PACK_FOLDS = [(TURN_T, tm(38.125), "h", 240.0, -1),
+              (tm(38.25) - .09, tm(38.25), "v", 150.0, 1),
+              (tm(38.375) - .09, tm(38.375), "h", 360.0, -1),
+              (tm(38.5) - .09, tm(38.5), "v", 75.0, -1)]
+PACK_C0 = np.array([112.5, 420.0])              # the packet's middle when it is folded
+PACK_HOPS = [tm(38.625 + k / 24) for k in range(4)]
+# it bursts open, a fold after another (the last first - one at a time: two at once
+# would tear it), the biggest slapping down flat on the break
+PACK_OPENS = {3: (tm(38.75), tm(38.785)), 2: (tm(38.775), tm(38.81)), 1: (tm(38.80), tm(38.84)),
+              0: (tm(38.83), BREAK_T)}
+# the packet's knocks (for fx.pack_bursts): (t, how hard) - each fold landing, each
+# hop landing, each fold flung open
+PACK_KNOCKS = ([(t1, 1.0) for _, t1, *_ in PACK_FOLDS] + [(h, .35) for h in PACK_HOPS]
+               + [(PACK_OPENS[i][0] + .012, .6) for i in (3, 2, 1, 0)])
+
+
+def _pack_theta(i, t):
+    """How far over fold i is at t (0 flat ... pi down)."""
+    t0, t1, _, _, _ = PACK_FOLDS[i]
+    if t < t0:
+        th = 0.0
+    elif i == 0 and t < t1 - .07:                      # up quickly, then hanging there, trembling
+        th = math.pi * .55 * (1 - (1 - clamp((t - t0) / .06)) ** 3) + .05 * math.sin((t - t0) * 70) * clamp((t - t0) / .06)
+    elif i == 0:
+        u = clamp((t - (t1 - .07)) / .07)
+        th = math.pi * (.55 + .45 * u * u)
+    else:
+        u = clamp((t - t0) / (t1 - t0))
+        th = math.pi * u ** 2.2
+    lo, hi = PACK_OPENS[i]                             # bursting open: the last first, one after another
+    if t >= lo:
+        u = clamp((t - lo) / (hi - lo))
+        th = math.pi * (1 - u) ** (1.3 if i == 0 else 2.0)   # (flung open; the last slaps down flat on the break)
+    return th
+
+
+def _pack_place(t):
+    """The packet as a whole: (where its middle is, turn, squash x, squash y)."""
+    T, rot, sx, sy = PACK_C0.copy(), 0.0, 1.0, 1.0
+    for t0, t1, *_ in PACK_FOLDS[1:]:                  # each fold lands with a jolt
+        b = t - t1
+        if 0 <= b < .07:
+            k = math.sin(math.pi * b / .07) * .07
+            sx, sy = sx * (1 + k), sy * (1 - k)
+    w0 = PACK_FOLDS[-1][1]
+    if w0 <= t < PACK_HOPS[0] - (PACK_HOPS[1] - PACK_HOPS[0]):   # winding up: squashed, drawn back, trembling
+        u = clamp((t - w0) / .05)
+        sx, sy = 1 + .22 * u, 1 - .16 * u
+        T = T + np.array([-14.0 * u + 2 * math.sin(t * 90), 0.0])
+    step = PACK_HOPS[1] - PACK_HOPS[0]
+    P = [PACK_C0 + np.asarray(PACK_MOVE) * k / 4 for k in range(5)]
+    for k, h in enumerate(PACK_HOPS):                  # a hop on each 24th, a quarter turn each
+        if h - step <= t < h:
+            u = (t - (h - step)) / step
+            e = 1 - (1 - u) ** 2
+            T = P[k] + (P[k + 1] - P[k]) * e + np.array([0.0, -38.0 * math.sin(math.pi * u)])
+            rot = math.pi / 2 * (k + e)
+            st = 1 + .18 * math.sin(math.pi * u)
+            sx, sy = (st, 1 / st) if k % 2 else (1 / st, st)
+    if t >= PACK_HOPS[-1]:
+        T, rot = P[4].copy(), 0.0
+    return T, rot, sx, sy
+
+
+def pack_geometry(t):
+    """M38's folding up, at t: the cells as they lie on screen, back to front - each
+    (its corners on screen (4 x 2), front showing?, the rect of the screen it
+    shows when face up) - and the packet's middle. None outside M38."""
+    if not (TURN_T <= t < BREAK_T) or LOCAL:
+        return None
+    cw, ch = PACK_CELL
+    cells = []
+    for i in range(4):
+        for j in range(4):
+            x0, y0 = j * cw, i * ch
+            P = np.array([[x0, y0, 0.0], [x0 + cw, y0, 0.0], [x0 + cw, y0 + ch, 0.0], [x0, y0 + ch, 0.0]])
+            cells.append(dict(P=P, src=(x0, y0, x0 + cw, y0 + ch), layer=0.0))
+    nl = 1.0
+    for f, (t0, t1, ax, c, side) in enumerate(PACK_FOLDS):
+        th = _pack_theta(f, t)
+        k = 1 if ax == "h" else 0                     # (the coordinate across the crease)
+        moving = [cl for cl in cells if side * (cl["flat"][:, k].mean() - c) > 0] if all("flat" in cl for cl in cells) \
+            else [cl for cl in cells if side * (cl["P"][:, k].mean() - c) > 0]
+        mids = {id(cl) for cl in moving}
+        for cl in cells:                              # (where each lies once this fold is down: for the next)
+            fl = cl.get("flat", cl["P"][:, :2].copy()).copy()
+            if id(cl) in mids:
+                fl[:, k] = 2 * c - fl[:, k]
+            cl["flat_next"] = fl
+        if th > 0:
+            for cl in moving:                          # (turned over about the crease, towards us)
+                P = cl["P"].copy()
+                d = P[:, k] - c
+                z = P[:, 2]
+                P[:, k] = c + d * math.cos(th) + side * z * math.sin(th)
+                P[:, 2] = -side * d * math.sin(th) + z * math.cos(th) - .01
+                cl["P"] = P
+                lay = cl["layer"] / max(nl, 1) * .5        # (the stack keeps its order until past upright)
+                cl["layer"] = nl + (lay if th < math.pi / 2 else .5 - lay)
+            nl += 1
+        for cl in cells:
+            cl["flat"] = cl.pop("flat_next")
+    T, rot, sx, sy = _pack_place(t)
+    cr, sr = math.cos(rot), math.sin(rot)
+    f_ = 900.0
+    out = []
+    for cl in sorted(cells, key=lambda c_: c_["layer"]):
+        P = cl["P"]
+        z = P[:, 2]
+        cen = PACK_C0
+        q = cen + (P[:, :2] - cen) * (f_ / (f_ + z))[:, None]       # (in depth: nearer, bigger)
+        q = (q - PACK_C0) * [sx, sy]
+        q = np.stack([cr * q[:, 0] - sr * q[:, 1], sr * q[:, 0] + cr * q[:, 1]], 1) + T
+        e1, e2 = q[1] - q[0], q[3] - q[0]
+        front = (e1[0] * e2[1] - e1[1] * e2[0]) > 0
+        n = np.cross(P[1] - P[0], P[3] - P[0])
+        out.append((q, front, cl["src"], abs(n[2]) / max(1e-9, np.linalg.norm(n))))   # (and how flat it lies)
+    return out, T
+
+
+def sheet_centre(t):
+    """Where the sheet's middle is on screen (folds and all)."""
+    M, b, cur = sheet_state(t)
+    x, y, w, h = arena_box(t)
+    c = M @ np.array([x + w / 2, y + h / 2]) + b
+    if cur is not None:
+        c = cur[0] + cur[3]
+    pg = pack_geometry(t)
+    if pg is not None:                                     # (folded up and flying: the packet)
+        q = np.concatenate([g[0] for g in pg[0]])
+        c = (q.min(0) + q.max(0)) / 2
+    return c
 
 
 def _arena_keys():
     s16, b = MEAS / 16, lambda m: tm(m)
-    K = []                                       # (t, dx, dy, w, h, dur, ease)
-    for j in range(4):                           # the sheet drops a little on each sixteenth
-        K.append((SINK0 + j * s16, _DX0, _DY0 + 3 * (j + 1), FULL, 150, .05, "out"))
-    K.append((b(33), 0, 0, FULL, 150, ARRIVE - b(33) - .02, "smooth"))  # carried up into the band
-    K.append((ARRIVE, 0, 6, FULL, 138, .05, "out"))                     # lands
-    K.append((ARRIVE + .07, 0, 0, FULL, 150, .22, "out"))
-    for m in (34.125, 34.25, 34.375):                                   # it flexes on the three pairs
-        K.append((b(m), 0, 0, FULL, 134, .05, "out"))
-        K.append((b(m) + .06, 0, 0, FULL, 150, .08, "out"))
-    H2 = (FULL - HALF_W) // 2 - 10                                      # how far a half sits off the middle
-    K += [(b(35), H2, 0, HALF_W, 150, .35, "smooth"),                   # it shrinks into the right half
-          (b(35.5), -H2, 0, HALF_W, 150, .35, "smooth"),                # ...goes over to the left half
-          (b(36), H2, 0, HALF_W, 150, .35, "smooth"),
-          (b(36.5), 0, 0, HALF_W, 150, .3, "smooth"),
-          (b(37), H2, 0, HALF_W, 150, .4, "smooth"),
-          (b(38), -H2, 0, HALF_W, 150, .4, "smooth"),
-          (b(38.875), 0, 0, FULL, 130, .1, "out")]                      # the break: the whole width again
-    side = -1
-    for m in (39, 40, 41):                                              # bar by bar, from side to side
-        K.append((b(m), H2 * side, 0, HALF_W, 150, .35, "smooth"))
-        K.append((b(m + .5), H2 * side, 0, HALF_W - 20, 140, .06, "out"))   # (it flexes on the pairs)
-        K.append((b(m + .5) + .08, H2 * side, 0, HALF_W, 150, .12, "out"))
-        side = -side
-    K += [(b(42), 0, 0, FULL, 150, .35, "smooth")]
-    side = 1
-    for m in (43, 44, 45):
-        K.append((b(m), H2 * side, 0, HALF_W, 150, .35, "smooth"))
-        K.append((b(m + .5), H2 * side, 0, HALF_W - 20, 140, .06, "out"))
-        K.append((b(m + .5) + .08, H2 * side, 0, HALF_W, 150, .12, "out"))
-        side = -side
-    K += [(b(45.875), 0, 0, FULL, 150, .4, "smooth"),                   # the long slide: the whole width
-          (b(47), 0, 0, FULL, 134, .06, "out"),                         # the break
-          (b(47) + .08, 0, 0, FULL, 150, .25, "out")]
+    K = []                                       # (t, dx, dy, w, h, lx, dur, ease)
+    for j in range(4):                           # the sheet is yanked down on each sixteenth
+        K.append((SINK0 + j * s16, _DX0, _DY0 + 6 * (j + 1), FULL, BAND_H, 0, .05, "out"))
+    K.append((b(33), 0, 0, FULL, BAND_H, 0, ARRIVE - b(33) - .02, "smooth"))   # carried up into the band
+    K.append((ARRIVE, 0, 0, FULL, BAND_H - 16, 0, .05, "out"))                 # lands
+    K.append((ARRIVE + .07, 0, 0, FULL, BAND_H, 0, .22, "out"))
+    for j, t in enumerate(FOLDS):                # folds: the right end goes under, the left edge stays put
+        w = FULL + (HALF_W - FULL) * (j + 1) / len(FOLDS)
+        K.append((t, 0, 0, w, BAND_H, (w - FULL) / 2, .06, "out"))
+    x = 0.0
+    for t, way in JUMPS:                         # a jump: it draws back, then snaps across and lands on the note
+        K.append((t - .2, x - 14 * way, 0, HALF_W, BAND_H, LEFT_HALF, .1, "smooth"))
+        x = JUMP if way > 0 else 0.0
+        K.append((t - .085, x + 10 * way, 0, HALF_W, BAND_H, LEFT_HALF, .085, "in"))
+        K.append((t, x, 0, HALF_W, BAND_H, LEFT_HALF, .12, "out"))
+    # (from here on the page's folds move it: FOLD_KEYS) - but before M42 the half
+    # opens out to the whole sheet (its left edge stays put), and after it folds back
+    K.append((SHIFT_T, 0, 0, HALF_W, BAND_H, LEFT_HALF, 1e-6, "out"))
+    K.append((OPEN_T - .004, 0, 0, FULL, BAND_H, 0, .004, "out"))
+    K.append((REFOLD_T - .1, 0, 0, HALF_W, BAND_H, LEFT_HALF, .06, "out"))
+    K.append((OPEN2_T - .004, 0, 0, FULL, BAND_H, 0, .004, "out"))
     return K
 
 
@@ -215,17 +541,20 @@ def _ease(kind, u):
     u = clamp(u)
     if kind == "out":
         return 1 - (1 - u) ** 3
+    if kind == "in":
+        return u * u
     return u * u * (3 - 2 * u)
 
 
 def arena_state(t):
-    """(dx, dy, w, h) of the arena at t: its offset on screen and its size."""
-    st = [_DX0, _DY0, float(FULL), 150.0]
-    for tk, dx, dy, w, h, dur, ease in ARENA_KEYS:
+    """(dx, dy, w, h, lx) of the arena at t: its offset on screen, its size, and
+    which part of the sheet it is (lx: its middle, from the middle of the sheet)."""
+    st = [_DX0, _DY0, float(FULL), float(BAND_H), 0.0]
+    for tk, dx, dy, w, h, lx, dur, ease in ARENA_KEYS:
         if t < tk:
             break
         e = _ease(ease, (t - tk) / dur)
-        st = [a + (b_ - a) * e for a, b_ in zip(st, (dx, dy, w, h))]
+        st = [a + (b_ - a) * e for a, b_ in zip(st, (dx, dy, w, h, lx))]
     return tuple(st)
 
 
@@ -233,17 +562,25 @@ def arena_offset(t):
     """How far (dx, dy) the arena - and everything on it - is moved on screen."""
     if LOCAL or not (SINK0 <= t < NEW_END):
         return 0, 0
-    dx, dy, _, _ = arena_state(t)
+    dx, dy = arena_state(t)[:2]
     return int(round(dx)), int(round(dy))
 
 
 def arena_size(t):
-    _, _, w, h = arena_state(t)
+    w, h = arena_state(t)[2:4]
     return int(round(w / 2)) * 2, int(round(h / 2)) * 2
 
 
+def arena_local(t):
+    """The arena in its own frame (what the planner sees): (x, y, w, h) - the
+    screen's frame once it fills the screen (dx = dy = 0, the whole width)."""
+    w, h = arena_size(t)
+    lx = arena_state(t)[4]
+    return 320 - w // 2 + int(round(lx)), (480 - h) // 2, w, h
+
+
 def arena_box(t):
-    x, y, w, h = box_rect(arena_size(t))
+    x, y, w, h = arena_local(t)
     ox, oy = arena_offset(t)
     return x + ox, y + oy, w, h
 
@@ -838,13 +1175,17 @@ def add_battle(tl: Timeline, nxt, notes):
         # until the one press of FIGHT cuts it all
         hunt_target = (lambda t: AIM(t) if AIM is not None and AIM(t) is not None else FIGHT_SOUL)
         tl.attacks.append(A.HuntingInk((g.cx, g.cy), n.t, hunt_target, PRESS_T, CONFIRMS[-1] + .5, lunges=CLOSE_IN,
-                                       seed=nxt(), launches=LAUNCH, confirms=CONFIRMS, home=MENU_SOUL))
-        # FIGHT on the M29.5 hold: UT's aim meter, painted on the paper; one bar
-        # per drop, each stopped (confirmed) on its note - and that drop is smashed
+                                       n=len(CONFIRMS), seed=nxt(), confirms=CONFIRMS, launches=LAUNCH,
+                                       windups=WINDUP, t_land=LAND_T, home=MENU_SOUL,
+                                       soul_path=ring_centre, zoom=cam_zoom, t_knock=KNOCK_T))
+        # FIGHT on the M29 hold: UT's aim meter, painted on the paper; one bar
+        # per drop, sliding in as its drop flies and stopped (confirmed) on its
+        # note as the drop gets there - and that drop is smashed
         # it stays up through M31-M32.9375 - a bar for every piece of ink cut off him -
         # and is gone the moment the last one is (M33)
         tl.attacks.append(A.FightTarget((320, 316), 268, 54, AIM_OPEN, CONFIRMS + CURTAIN_CUTS, REVEAL - .14,
-                                        slides=[.42] * len(CONFIRMS) + [.3] * len(CURTAIN_CUTS), fade=.12))
+                                        slides=[min(2 * EIGHTH, t - AIM_OPEN) for t in CONFIRMS]
+                                        + [.3] * len(CURTAIN_CUTS), fade=.12))
         tl.extra_impacts.append((n.t, 8.0))
         tl.flashes.append((n.t, 40))
     add_rest(tl, nxt)
@@ -1084,104 +1425,252 @@ def add_rest(tl: Timeline, nxt):
 
 # --------------------------------------------------------------------- the descent's attacks
 def add_sink(tl: Timeline, notes):
-    """M34-M47: attacks on the moving arena, all made in its own frame and moved
-    with it on screen (attacks.ArenaFrame). They come in from all round it - from
-    each note's key on the maimai ring - and turn to ink as they cross onto the
-    paper:
-      - single taps: a bone at the soul from the key's side; pairs: two at once;
-      - sixteenth runs round the ring: a bone on every note, every other one at
-        the soul, the rest through the middle;
-      - twenty-fourth bursts: a fan of bones through the middle;
-      - two keys alternating on sixteenths (1-4-1-4...): two pistons stabbing in
-        and out along fixed lanes from those keys (the lanes are marked first);
-      - slides: a brush stroke along the slide (a pale wash first);
-      - holds: a beam of ink poured in from outside along the key's direction;
-      - breaks: the arena snaps into a new shape (flash, shake)."""
-    rng = np.random.default_rng(3434)
-    seg = sorted((n for n in notes if ARRIVE - 1e-3 <= n.t < tm(47.5)), key=lambda n: n.t)
-    s16 = MEAS / 16
+    """M34-M47: the band is the battle. Every move it makes throws the ink on it
+    about - attacks made in its own frame and moved with it on screen
+    (attacks.ArenaFrame):
+      - M34: it lands; on the three pairs its right end folds under, a third at a
+        time (it is the sheet's left half now) - the folds squeeze the ink on it
+        against its right edge, and on the run it sloshes across, a step a note;
+      - M35-M36.4375: on each pair it jumps to the other side of the screen and the
+        ink, left behind, sloshes back across it the other way, a step a note
+        (attacks.SloshWave: one gap in the wall, shown while it lies pooled);
+      - M36.5: the 2-7-1-8-2-7 - rings of ink round the soul, whose beads then fly
+        at it from every side (attacks.InkRings);
+      - M36.875: it glides to the middle."""
     atts = []
+    s16 = MEAS / 16
+    w, h = HALF_W, BAND_H
+    x0, y0 = 320 - w // 2 + int(round(LEFT_HALF)), (480 - h) // 2
+    b = BORDER
+    rect = (x0 + b, y0 + b, x0 + w - b, y0 + h - b)         # the half's paper, in its own frame
+    lo, hi = rect[1] + 22, rect[3] - 22
 
-    def geo(t):
-        return Geo(arena_size(t))
+    def aim(t):
+        p = AIM(t) if AIM is not None else None
+        return p if p is not None else ((rect[0] + rect[2]) / 2, (rect[1] + rect[3]) / 2)
 
-    def edge_dist(g, u):
-        """From the middle to the paper's edge along unit vector u."""
-        ux, uy = abs(u[0]) + 1e-9, abs(u[1]) + 1e-9
-        return min(g.iw / 2 / ux, g.ih / 2 / uy)
+    def inside(x, y, r=rect, m=34):
+        return float(np.clip(x, r[0] + m, r[2] - m)), float(np.clip(y, r[1] + m, r[3] - m))
 
-    def dart(t, key, aim, speed=560.0, length=30):
-        g = geo(t)
-        u = np.array(key_vec(key), float)
-        start = np.array([g.cx, g.cy]) + u * (math.hypot(g.iw, g.ih) / 2 + 50)
-        d = np.asarray(aim, float) - start
-        atts.append(A.BoneShots((g.ix0, g.iy0, g.ix1, g.iy1), [(t, tuple(start), tuple(d))], speed=speed,
-                                length=length, seed=int(rng.integers(1_000_000))))
+    full = (b, b, FULL - b, BAND_H - b)                  # the whole sheet, in its own frame (M33-M34)
+    # M33, going down: ink in the world it falls past shoots up through the sheet on
+    # every note - one rod at the soul, one beside it (a side in turn) - and the
+    # slide is a stroke painted across the sheet as it lands
+    rods = []
+    for k, t in enumerate(t for t in _CHART_T if tm(33) - 1e-3 <= t < tm(34) - 1e-3 and abs(t - tm(33.625)) > 1e-3):
+        sx = aim(t - .3)[0]
+        rods.append((t, inside(sx, 0, full, 10)[0]))
+        rods.append((t, inside(sx + (46 if k % 2 == 0 else -46), 0, full, 10)[0]))
+    atts.append(A.InkRod(full, rods))
+    t_s = tm(33.875)                                    # (the slide's star is on M33.625, it slides from M33.875)
+    sx, sy = aim(t_s - .1)
+    th = math.radians(25)
+    d, nrm = np.array([math.cos(th), math.sin(th)]), np.array([math.sin(th), -math.cos(th)])
+    Q = np.array([sx, sy]) + nrm * 55                   # (it passes above the soul)
+    atts.append(A.InkStroke([tuple(Q + d * u * 700) for u in np.linspace(-1, 1, 9)], t_s, width=14,
+                            lead=t_s - tm(33.625), sweep=EIGHTH, seed=5400))
+    # the folds: each end slams down wet - where it lands is inked
+    for j, t in enumerate(FOLDS):
+        wa = FULL + (HALF_W - FULL) * j / len(FOLDS)
+        wb = FULL + (HALF_W - FULL) * (j + 1) / len(FOLDS)
+        atts.append(A.FoldFlap(t, wb, wa - wb, y0, y0 + h, slam=True))
+    # the sloshing: a wall on every quarter - two to each half bar - each across in
+    # four steps, a step a sixteenth, so that one is always on the move and there is
+    # never more than one; on the pairs, where the half jumps, they turn round with it
+    # (the next comes from the other side at once). Each lies pooled at the edge it
+    # starts from for two sixteenths first (pale, its gap showing - but only on paper
+    # that is not black: never pale over ink that still hurts), then it is black as it
+    # slams on. Nothing of it shows off the paper. The gaps run along one line, as fast as the soul can go (SLOSH_V,
+    # it runs 120) and only just wide enough for it (SLOSH_GAP: 9 px to spare each
+    # side), so it has to keep running flat out: the first bar one way, turning on the
+    # pair in the middle (M35.5), the second back. Its mark stops hurting fast (dry),
+    # but its streaks stay on a while (linger)
+    halves = [(tm(34.5), -1)] + [(t, way) for t, way in JUMPS]
+    t_a, t_turn = FOLDS[-1] + .1, tm(35.5)               # (the first shows as the last fold is down: it sets off)
+    sy0 = aim(t_a - .1)[1]
+    D = -1 if sy0 >= (lo + hi) / 2 else 1                 # (the first bar towards the further edge)
 
-    # 1. two keys alternating on sixteenths: pistons along fixed lanes
-    used = set()
-    singles = [n for n in seg if n.kind == "tap" and n.group_size == 1 and not n.brk]
-    i = 0
-    while i < len(singles):
-        run = [singles[i]]
-        j = i + 1
-        while j < len(singles) and abs(singles[j].t - run[-1].t - s16) < 2e-3:
-            run.append(singles[j])
-            j += 1
-        keys = sorted({n.key for n in run})
-        if len(run) >= 4 and len(keys) == 2 and all(a.key != b.key for a, b in zip(run, run[1:])):
-            g = geo(run[0].t)
-            for key in keys:
-                u = np.array(key_vec(key), float)
-                atts.append(A.Piston((g.cx, g.cy), -u, [n.t for n in run if n.key == key],
-                                     edge_dist(g, u) + 10, 12.0, seed=int(rng.integers(1_000_000))))
-            used.update(id(n) for n in run)
-            i = j
-        else:
-            i += 1
+    def track(t):
+        if t < t_turn:
+            return sy0 + D * SLOSH_V * (t - t_a)
+        return sy0 + D * SLOSH_V * (t_turn - t_a) - D * SLOSH_V * (t - t_turn)
 
-    # 2. everything else, note by note
-    times = sorted({round(n.t, 4) for n in seg})
-    for ti, t in enumerate(times):
-        grp = [n for n in seg if abs(n.t - t) < 1e-3 and id(n) not in used]
-        if not grp:
-            continue
-        g = geo(t)
-        ctr = np.array([g.cx, g.cy])
-        gap = min([abs(t - u) for u in times if abs(t - u) > 1e-3] or [1.0])
-        for n in grp:
-            if n.brk:                                   # the arena snaps into a new shape
-                tl.flashes.append((t, 34))
-                tl.extra_impacts.append((t, 8.0))
-                atts.append(A.SplashRing(tuple(ctr), t, n=10, speed=170, seed=int(rng.integers(1_000_000)),
-                                         tele=.0, big=True, harmless=True))
-                continue
-            if n.kind == "slide":                       # a brush stroke along the slide
-                for sl in n.slides:
-                    for path in slide_paths(sl.start_key, sl.segments):
-                        pts = [g.ring(x * .85, y * .85) for x, y in path]
-                        atts.append(A.InkStroke(pts, sl.t_start, width=12, lead=max(.42, sl.t_start - sl.t_star),
-                                                sweep=max(.06, sl.duration), linger=.12,
-                                                seed=int(rng.integers(1_000_000))))
-                continue
-            if n.kind == "hold":                        # a beam poured in along the key's direction
-                u = np.array(key_vec(n.key), float)
-                origin = ctr + u * (edge_dist(g, u) + 34)
-                atts.append(A.Beam(tuple(origin), tuple(-u), t, t + max(n.dur, .15), width=20, tele=.42,
-                                   seed=int(rng.integers(1_000_000))))
-                continue
-            # a tap: a bone from its key's side
-            if gap < .06:                               # twenty-fourths: a fan through the middle
-                aim = ctr + rng.uniform(-10, 10, 2)
-                dart(t, n.key, aim, speed=620)
-            elif gap < .08 and len(grp) == 1:           # sixteenth runs: every other one at the soul
-                k = int(round((t - OFFSET) / s16))
-                aim = aim_at(t - .35, g) if k % 2 == 0 else ctr + rng.uniform(-14, 14, 2)
-                dart(t, n.key, aim)
-            else:                                       # eighths, pairs: at the soul
-                off = (np.array(key_vec(n.key)) * 10) if len(grp) > 1 else 0
-                dart(t, n.key, aim_at(t - .35, g) + off)
-        if len(grp) > 1 and not any(n.brk for n in grp):
-            tl.extra_impacts.append((t, 2.0))
-    tl.extra_impacts.append((ARRIVE, 6.0))              # the piece lands
+    for h, (th, way) in enumerate(halves):
+        for j in range(2):
+            go = th + 4 * j * s16
+            gy = float(np.clip(track(go + s16), lo, hi))   # (it is over the middle of the sheet a step on)
+            t_pool = FOLDS[-1] - .02 if h == j == 0 else go - 2 * s16
+            atts.append(A.SloshWave(rect, way, t_pool, [go] + [go + k * s16 for k in range(4)], gy,
+                                    seed=4400 + 2 * h + j, dry=2.6, linger=2.2, gap=SLOSH_GAP, under=True, hz=0.0))
+    # the 2-7-1-8-2-7, after the walls: three rings of ink round the soul, brushed
+    # on the first three notes, the outermost first (hollow, grey, turning - all
+    # three there at once), then firing their beads in at it from every side one by
+    # one on the last three, the innermost first (so that each ring's shots land on
+    # their own)
+    cx_, cy_ = aim(RING_DRAWS[0] - .05)
+    atts.append(A.InkRings((cx_, cy_), (146, 112, 78, 44), RING_DRAWS, RING_FIRES[::-1], n=8, seed=5460))
+    # M37, the call (its mirrored answer on M38 is gone: there the page is only
+    # flung over): ink shooting up either side of the soul on the two eighths; the
+    # slide's star shows the stroke it will be (pale), and on the slide it is
+    # painted across the sheet, black, while on the 24ths ink shoots up through it,
+    # stepping across
+    for k, m in enumerate(CALL_M):
+        bt = lambda f: tm(m + f)
+        atts.append(A.InkRod(rect, [(bt(.125), inside(aim(bt(.125) - .3)[0] - 40, 0, rect, 8)[0]),
+                                    (bt(.25), inside(aim(bt(.25) - .3)[0] + 40, 0, rect, 8)[0])]))
+        sx, sy = aim(bt(.6))
+        d, nrm = np.array([1, -1]) / math.sqrt(2), np.array([-1, -1]) / math.sqrt(2)
+        Q = np.array([sx, sy]) - nrm * 60                   # (it passes below and left of the soul)
+        path = [tuple(Q + d * u * 380 + nrm * 14 * (1 - u * u)) for u in np.linspace(-1, 1, 9)]
+        atts.append(A.InkStroke(path, bt(.625), width=14, lead=bt(.625) - bt(.375), sweep=EIGHTH, seed=5350 + k))
+        sx = aim(bt(.55))[0]                               # the 24ths: four rods stepping across past the soul
+        atts.append(A.InkRod(rect, [(tm(m + .625 + j / 24), inside(sx + 60 - 40 * j, 0, rect, 8)[0]) for j in range(4)]))
+        # and like the rings before it, but straight: three lines of ink down either side
+        # of the sheet, brushed on (the left side on the first eighth, the right on the
+        # second), firing their beads across it one line at a time on the six notes
+        # after, the sides by turns - the outermost first; each line's beads a little off
+        # the last's, so the lanes between them move, round where the soul is
+        ly = aim(bt(.3))[1]
+        fires = [bt(f) for f in (.375, .5, .625, .625 + 1 / 24, .625 + 2 / 24, .75)]
+        lines = []
+        for q in range(6):
+            side = -1 if q % 2 == 0 else 1                   # -1: on the left, firing right
+            depth = q // 2                                   # (0: the outermost)
+            x = rect[0] + 16 + 22 * depth if side < 0 else rect[2] - 16 - 22 * depth
+            off = ly + LANE_SP / 2 + LANE_STEP * (q - 2.5)   # (the lane: round the soul, moving down)
+            ys = [y for y in off + LANE_SP * np.arange(-9, 10) if rect[1] + 8 <= y <= rect[3] - 8]
+            lines.append((x, -side, (bt(.125) if side < 0 else bt(.25)) + .03 * depth, fires[q], ys))
+        atts.append(A.InkLanes(rect, lines, seed=5380 + k))
+    # the climax: from each round's start through the bar's trill a sea of ink spears
+    # rises behind the soul (up the sheet for three rounds, back down it for three -
+    # on screen: up, down, right, left, up, down) and comes on after it as fast as it
+    # can run; little bubbles of ink are shot at it head-on. On the pairs the page is
+    # folded over (choreo.sheet_state), slamming down - ink thrown off its edges
+    # (M42's cut is round a spot well away from the soul - CUT_AWAY px further onto the
+    # opened-out sheet: it shows as the sheet opens, and the soul has to get into it
+    # before the blades come round, then keeps to it - stepping out of the slashes'
+    # way and back - so that M43's run sets off from there, the same every plan)
+    # (across the sheet towards its middle, and only a little down it: M43-M45 run on
+    # down from there, three rounds of it)
+    soul0 = np.array(aim(OPEN_T + .1), float)
+    sx_ = 1.0 if rect[0] + FULL / 2 >= soul0[0] else -1.0
+    cc = np.clip(soul0 + [sx_ * CUT_AWAY[0], CUT_AWAY[1]], [rect[0] + 90, rect[1] + 90],
+                 [rect[0] + FULL - 90, rect[1] + 135])
+    GOALS[:] = _GOALS0 + [(OPEN_T + .1, REFOLD_T, (float(cc[0]), float(cc[1])))]
+    line_end = None                                  # (the second wave: where the last round's line ended)
+    LINES.clear()
+    for k, m in enumerate(CORE_M):
+        trill = core_trill(m)
+        t_show, hits = core_run(k)
+        sy = aim(t_show)[1]
+        way = RUN_WAY[k]                             # -1: it rises from the bottom, driving the soul up
+        lo_f, hi_f = rect[1] + 52, rect[3] - 52
+        gates, darts, dart_aim = [], [], aim
+        if k >= 3:
+            # the second wave: gates thrust in ahead of it on the pairs and the trill's
+            # eighths (both sides at once, one gap - to the left and the right of its
+            # way by turns, a gate every GATE_DY px, as many as it gets through), and on
+            # the trill's notes the front spear's point snaps off and flies at it. All of
+            # it laid out along one line it can run (flat out, weaving through the gaps)
+            # from where the last round's line ended - not from the last plan, which
+            # would shift it about from one pass to the next (plan.py)
+            P = cc.copy() if line_end is None else line_end
+            x_s = float(np.clip(P[0], rect[0] + 50, rect[2] - 50))
+            sy = float(P[1])
+            rng_g = np.random.default_rng(5180 + k)
+            sgn = rng_g.choice((-1, 1))
+            eighths = [t for t in (tm(m - .25 + j / 8) for j in range(6))
+                       if t >= t_show - 1e-3 and any(abs(t - n) < 1e-3 for n in _CHART_T)]
+            way_pts = [(t_show, x_s)]                    # (t, x) the line goes through: the gaps, as it gets there
+            for tg in eighths:
+                j = len(gates)
+                ahead = GATE_AT + GATE_DY * j
+                t_pass = t_show + ahead / 118
+                if t_pass > hits[-1] + .08:              # (it runs on a moment past the last note)
+                    break
+                if tg > t_pass - .2:
+                    continue
+                off = sgn * 8 if j == 0 else sgn * (-1) ** j * 16    # (the first: just off where it starts; then
+                                                                    # the other side, and back)
+                gx = float(np.clip(x_s + off + rng_g.uniform(-2, 2), rect[0] + 30, rect[2] - 30))
+                gates.append((tg, sy + way * ahead, gx))
+                way_pts.append((t_pass, gx))
+            tw, xw = zip(*way_pts)
+            uw = [118 * (t - t_show) for t in tw]        # (how far along it each is)
+
+            def dart_aim(t, tw=tw, xw=xw, sy=sy, way=way, t_show=t_show):
+                return float(np.interp(t, tw, xw)), sy + way * 118 * (t - t_show)
+
+            def line_x(y, uw=uw, xw=xw, sy=sy, way=way):
+                return float(np.interp(way * (y - sy), uw, xw))
+
+            line_end = np.array(dart_aim(hits[-1] + .1))   # (where it stops: RUNS)
+            darts = list(trill[:-1])                     # (the last would come after it has stopped)
+            LINES.append((t_show, hits[-1] + .1, line_x))
+        fronts = [float(np.clip(sy - way * 30 + way * 118 * (t - t_show), lo_f, hi_f)) for t in hits]
+        sea = A.SpikeSea(rect, t_show, hits, fronts, way, hits[-1] + .1, seed=5100 + k, gates=gates, darts=darts,
+                         aim=dart_aim)
+        atts.append(sea)
+        # bubbles: on every sixteenth from the sea's showing a pair wells up on the edge
+        # the soul is running for and fires at it head-on - one at where it will be by
+        # then, one well away from that. (The second wave: the gates are in their way -
+        # they break on them, all but those that come through a gap - and the one at
+        # the soul comes close by it, not at it: it is in a gap, with no room to step aside)
+        s16 = MEAS / 16
+        rng_b = np.random.default_rng(5160 + k)
+        y_in = rect[1] + 10 if way < 0 else rect[3] - 10
+        rows = []
+        for r in range(1, int((trill[-1] - t_show) / s16) + 1):
+            tf = t_show + r * s16
+            meet = tf + abs(y_in - dart_aim(tf)[1]) / (A.InkBubbles.V + 118)
+            xa = dart_aim(meet)[0] + (rng_b.uniform(-6, 6) if k < 3 else (-1) ** r * 20 + rng_b.uniform(-3, 3))
+            xa = float(np.clip(xa, rect[0] + 16, rect[2] - 16))
+            xs = [x for x in np.linspace(rect[0] + 16, rect[2] - 16, 40) if abs(x - xa) > 70]
+            rows.append((tf, [xa, float(rng_b.choice(xs))]))
+        atts.append(A.InkBubbles(rect, -way, rows, trill[-1] + .2, sea=sea, seed=5150 + k))
+    # M42, between the rounds: the sheet is cut down round the soul - on the first
+    # four notes a blade goes round it in a circle, smaller each time, and all of
+    # the sheet outside drops away into the dark - and all the while it is slashed
+    # through, every which way, inside what is left (the slide: one long sweep). On
+    # the first pair it opens out whole again; on the second it is folded over and
+    # the next run starts
+    cut_ts = [tm(CUT_M + f) for f in (.125, .25, .375, .5)]
+    full = (rect[0], rect[1], rect[0] + FULL, rect[3])          # (the whole sheet, opened out)
+    atts.append(A.FoldFlap(OPEN_T - A.FoldFlap.DUR, rect[2], FULL - (rect[2] - rect[0]), rect[1], rect[3], unfold=True))
+    atts.append(A.FoldFlap(REFOLD_T - A.FoldFlap.DUR, rect[2], FULL - (rect[2] - rect[0]), rect[1], rect[3]))
+    atts.append(A.FoldFlap(OPEN2_T - A.FoldFlap.DUR, rect[2], FULL - (rect[2] - rect[0]), rect[1], rect[3], unfold=True))
+    rng_c = np.random.default_rng(4242)
+    # the drum roll in 32nds (41.875-42.125): on each a burst of the sheet outside the
+    # circle is cut to scraps and thrown off - in no order round it, most of the
+    # sheet gone before the circle's first cut
+    bursts = [tm(41.875 + j / 32) for j in range(8)]
+    # the warning: in the middle of what is going to go (upright on screen)
+    M_, b_, _ = sheet_state(OPEN_T + .01)
+    ox_, oy_ = arena_offset(OPEN_T + .01)
+    to_scr = lambda p: M_ @ (np.asarray(p, float) + [ox_, oy_]) + b_
+    to_loc = lambda q: M_.T @ (np.asarray(q, float) - b_) - [ox_, oy_]
+    c_s, s_s = to_scr(cc), to_scr(soul0)               # (beyond the soul, if it fits clear of it there)
+    w_s = np.clip(s_s + (s_s - c_s) / max(1e-6, float(np.linalg.norm(s_s - c_s))) * 100, [150, 130], [490, 350])
+    if np.linalg.norm(w_s - s_s) < 80:
+        w_s = np.clip(np.array([640, 480]) - c_s, [150, 130], [490, 350])
+    sign = [to_loc(w_s + v) for v in ((0, -70), (78, 62), (-78, 62))]
+    bang = [to_loc(w_s + v) for v in ((0, -26), (0, 22))], to_loc(w_s + (0, 42))
+    slashes = []
+    notes42 = [tm(CUT_M + f) for f in (.125, .25, .375, .5, .5 + 1 / 24, .5 + 2 / 24, .625)]
+    for j, th in enumerate(notes42):
+        for _ in range(3 if j >= 4 else 2):
+            slashes.append((th, rng_c.uniform(0, math.pi), rng_c.uniform(16, 52) * rng_c.choice((-1, 1)),
+                            rng_c.uniform(6, 10), rng_c.uniform(-.5, .5)))
+    slashes.append((tm(CUT_M + .5), None, None, 12, EIGHTH))   # (the slide: one long sweep round)
+    for j in range(1, 13):                                   # the drums rattling in 48ths under the 24ths: short ones
+        slashes.append((tm(CUT_M + .375 + j / 48), rng_c.uniform(0, math.pi), rng_c.uniform(18, 40) * rng_c.choice((-1, 1)),
+                        rng_c.uniform(5, 8), rng_c.uniform(-.6, .6), rng_c.uniform(46, 84)))
+    atts.append(A.CircleCut(full, cc, list(zip(cut_ts, (170, 128, 98, 76))), slashes, UNFOLD_T,
+                            lambda t: aim(t), bursts=bursts, warn=(OPEN_T, sign, bang), seed=4243))
+    for j, t in enumerate(FOLD_LANDS + [BREAK_T]):          # (the break: where M38's flight lands)
+        atts.append(A.FoldBurst(t, rect, seed=5170 + j))
     tl.attacks.append(A.ArenaFrame(atts, arena_offset))
+    # streaks of ink rushing up over the paper the whole way: it is still going down
+    # (in the world, not the arena's frame - they smear as it whips about under them)
+    tl.attacks.append(A.SpeedInk(RISE[0], NEW_END, lambda t: (arena_offset(t)[0] + (JUMP if t >= SHIFT_T and not LOCAL else 0),
+                                                             arena_offset(t)[1]), seed=4471))
