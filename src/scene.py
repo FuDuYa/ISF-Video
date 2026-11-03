@@ -444,9 +444,11 @@ def compose(t: float, tl, soul_xy, hp: int, soul_visible: bool = True) -> np.nda
         frame[top > 0] = top[top > 0]
         for spr, sx, sy, gain, mask in ctx.sprites:
             paste(frame, spr, sx, sy, gain, mask)
-    if soul_visible and soul_xy is not None:
+    if soul_xy is not None:
         sx, sy = soul_xy
         sg = SOAK.soul_gain(t, soul_xy, box) if SOAK is not None else 1.0
+        if not soul_visible:                                 # (the hit: it dims, it does not go)
+            sg *= .10
         cube = C.CUBE
         if cube is not None and cube.tx <= t < cube.tb:
             # the soul rides the turning box as a solid heart on its front face,

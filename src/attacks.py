@@ -1931,16 +1931,23 @@ class HelixBind(Attack):
         pitch = (self.yb - self.yt) / self.n
         if t >= self.tr:
             a = t - self.tr
-            if a < .2:                                          # the burst itself (pale, harmless)
+            if a < .3:                                          # the burst itself (pale, harmless)
                 for k in range(10):
                     q = k / 10 * math.tau
-                    r = 6 + 70 * out_cubic(a / .2)
+                    r = 6 + 95 * out_cubic(a / .3)
                     c.circle("art", self.cx + math.cos(q) * r, (self.yt + self.yb) / 2 + math.sin(q) * r * 1.4,
-                             6, fade_gray(110, 1 - a / .2))
-            # the rope crushes the bones inside into shards of ink - no bone shape left -
-            # that fly out with the burst; most of them are live
-            # (on the top layer: ink on the paper, white past its edge - they fly far)
-            g = 1 - smooth((a - .5) / .35)
+                             7, fade_gray(110, 1 - a / .3))
+            if a < .3:                                          # each bound bone bursts where it was held
+                b = a / .3
+                for _bone, _bx, y0, _ang in self.caught:
+                    for k in range(8):
+                        q = k / 8 * math.tau
+                        r = 4 + 26 * out_cubic(b)
+                        c.circle("top", self.cx + math.cos(q) * r, y0 + math.sin(q) * r, 5,
+                                 fade_gray(230, 1 - b))
+            # the rope crushes the bones into shards; they are only debris now (no hitbox):
+            # they fade out fast
+            g = 1 - smooth(a / .28)
             if g > 0:
                 K = 1.8
                 travel = (1 - math.exp(-K * a)) / K
@@ -1951,31 +1958,10 @@ class HelixBind(Attack):
                         v = np.array([side * (400 + 230 * abs(f[0])), -200 * f[1] - 70])
                         q = np.array([self.cx, y]) + v * travel + np.array([0, 170 * a * a])
                         rot = f[2] * 3 + f[3] * 14 * a
-                        sz = 6 + 3 * abs(f[3])
+                        sz = 4 + 2 * abs(f[3])
                         tri = [(q[0] + math.cos(rot + o) * sz * (1.4 if o == 0 else .8),
                                 q[1] + math.sin(rot + o) * sz * (1.4 if o == 0 else .8)) for o in (0, 2.3, 4.0)]
-                        c.poly("top", tri, fade_gray(255, g))
-                        if (i * 3 + k) % 5 and g > .5:                 # four in five of them cut
-                            c.circle("haz", q[0], q[1], sz * 1.4, 255)
-            # ...and one shard flies straight into the soul
-            if self.hit is not None:
-                th, target = self.hit
-                target = np.asarray(target, float)
-                start = np.array([self.cx, min(max(target[1], self.yt), self.yb)])
-                dur = max(.02, th - self.tr)
-                if a <= dur:
-                    u = a / dur
-                    p = start + (target - start) * u
-                    d = target - start
-                    d = d / (np.linalg.norm(d) + 1e-9)
-                    put_bone_line(c, p - d * 9, p + d * 9, hazard=False)
-                elif a < dur + .3:
-                    b = (a - dur) / .3
-                    for k in range(8):
-                        q = k / 8 * math.tau
-                        r = 4 + 26 * out_cubic(b)
-                        c.circle("top", target[0] + math.cos(q) * r, target[1] + math.sin(q) * r, 5,
-                                 fade_gray(230, 1 - b))
+                        c.poly("top", tri, fade_gray(165, g))
             return
         tb, te = self.tight[0][0], self.tight[-1][0] + .05
         for b, x, y, ang in self.caught:                        # bound onto the rope
@@ -4026,14 +4012,21 @@ class SpeedInk(Attack):
                        w, int(g * (1 - .45 * f0)))
 
 
-def ink_drop(c, x, y, ang, r, val=245, haz=True, exact=False):
+def ink_drop(c, x, y, ang, r, val=245, haz=True, exact=False, reveal=1.0):
     """A drop of ink flying along ang: a round head and a pointed tail behind it
-    (black, harmful unless haz is False; exact: all of the black hurts, its tail too)."""
+    (black, harmful unless haz is False; exact: all of the black hurts, its tail too).
+    reveal: how much of it has faded in, from its tip back (0..1; 1: the whole drop)."""
     ux, uy = math.cos(ang), math.sin(ang)
+    q = smooth(clamp(reveal))
     tail = [(x - ux * r * 2.8, y - uy * r * 2.8), (x - uy * r * .92, y + ux * r * .92),
             (x + uy * r * .92, y - ux * r * .92)]
-    c.poly("top", tail, val)
-    c.circle("top", x, y, 2 * r, val)
+    tq = smooth(clamp((reveal - .45) / .55))               # (the tail comes in behind the head)
+    if tq > 0:
+        l = 2.8 * r * tq
+        c.poly("top", [(x - ux * l, y - uy * l), (x - uy * r * .92, y + ux * r * .92),
+                       (x + uy * r * .92, y - ux * r * .92)], int(val * q))
+    R = 2 * r * q                                          # (its tip stays put: the head grows back from it)
+    c.circle("top", x + ux * (2 * r - R), y + uy * (2 * r - R), R, int(val * q))
     if haz:
         c.circle("haz", x, y, 2 * r if exact else 2 * r - 2, 255)
         if exact:
@@ -5000,16 +4993,17 @@ class InkLanes(Attack):
                              180 if late else int((110 + 60 * kick) * (.4 + .6 * pop)))
                     continue
                 b = t - tf
+                rv = smooth(clamp(b / .085))               # (it fades in from its tip back)
                 if b < .08:                                # the shot: a burst where it left
                     c.ring("top", x - way * 10, y, 6 + 16 * b / .08, 2, fade_gray(110, 1 - b / .08))
                 px = x - way * 10 + way * self.V * b
                 if not (self.x0 - 40 <= px <= self.x1 + 40):
                     continue
                 ang = 0.0 if way > 0 else math.pi
-                streak = [(px - way * 34, y), (px, y)]
-                c.line("top", streak, 3, 245)              # its streak (black: it hurts too)
-                c.line("haz", streak, 3, 255)
-                ink_drop(c, px, y, ang, 5.0, exact=True)
+                streak = [(px - way * 34 * rv, y), (px, y)]
+                c.line("top", streak, 3, int(245 * rv))    # its streak (black: it hurts too)
+                c.line("haz", [(px - way * 34, y), (px, y)], 3, 255)
+                ink_drop(c, px, y, ang, 5.0, exact=True, reveal=rv)
 
 
 class InkBubbles(Attack):

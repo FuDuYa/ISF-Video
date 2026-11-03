@@ -141,6 +141,13 @@ def sink(s, t):
         T = s["t1"] - s["t0"]
         tau = clamp(t - s["t0"], 0, T)
         a, b = FALL_V
+        if t > BURST:                                        # (the omen: it stops going down, easing to rest)
+            tau0 = BURST - s["t0"]
+            v0 = a + (b - a) * tau0 / T
+            d0 = a * tau0 + .5 * (b - a) * tau0 * tau0 / T
+            K = .45
+            ad = t - BURST
+            return d0 + v0 * K * (1 - math.exp(-ad / K)), v0 * math.exp(-ad / K)
         return a * tau + .5 * (b - a) * tau * tau / T, a + (b - a) * tau / T
     if not (s.get("sink") or s.get("drift")):
         return 0.0, 0.0
@@ -252,7 +259,7 @@ def glint(s, t):
     return -.3 + 2.6 * clamp((t - s["t0"]) / (s["t1"] - s["t0"]))
 
 
-def big_heart(out, P, R, cam, t, s):
+def big_heart(out, P, R, cam, t, s, blink=False):
     """The soul, a flat pixel heart, close, in perspective: lit (the light from up
     left), the glint going across it; from the fall on its heart glowing, beating."""
     beat = 1 + .025 * heartbeat(t)                           # (it swells a little on each beat)
@@ -271,6 +278,8 @@ def big_heart(out, P, R, cam, t, s):
         if g > 0:
             sg = .1 + .14 * g
             v = v + (dim + 130 * g) * np.exp(-((uu - .5) ** 2 + (vv - .55) ** 2) / (2 * sg * sg))
+        if blink:                                            # (the hit: it just dims a little)
+            v = v * .92
         return np.clip(v, 0, 255).astype(np.uint8)
 
     quad = [qq[:2] for qq in q]
@@ -348,13 +357,16 @@ def motes():
     return _MOTES
 
 
-def draw_motes(layer, cam, t, front, zcut, sunk=0.0, speed=0.0):
+def draw_motes(layer, cam, t, front, zcut, sunk=0.0, speed=0.0, tail_len=None, fade=None):
     """The specks drifting up (front: the ones nearer than the soul): far ones small and
     dim, near ones big soft discs; as it sinks they go up past it, streaking."""
+    tail_len = speed if tail_len is None else tail_len
+    fade = 1.0 if fade is None else fade
     m = motes()
     d = ImageDraw.Draw(layer)
     for i in range(len(m["zc"])):
-        if m["rush"][i] and speed < 3:
+        rf = clamp(speed / 3.0) if m["rush"][i] else 1.0       # (the fast ones thin out as it slows)
+        if rf * fade <= .004:
             continue
         zc, z = m["zc"][i], m["zc"][i] - MOTE_D
         sp = m["sp"][i] * (2.2 if m["bub"][i] else 1)
@@ -366,15 +378,15 @@ def draw_motes(layer, cam, t, front, zcut, sunk=0.0, speed=0.0):
             continue
         sx, sy, k = cam.pr(Pc)
         r = clamp(m["r"][i] * k * .35, .8, 16)
-        v = 120 * math.exp(-Pc[2] / 200) * min(1.0, 3.5 / r) * (.5 if front else 1)   # (dimmer over it)
-        tail = cam.pr(cam.to_cam([x, y + speed * .08, z]))       # (where it was a moment ago)
-        if tail is not None and math.hypot(tail[0] - sx, tail[1] - sy) > 2 * r:
+        v = 120 * math.exp(-Pc[2] / 200) * min(1.0, 3.5 / r) * (.5 if front else 1) * fade * rf   # (dimmer over it)
+        tp = cam.pr(cam.to_cam([x, y + tail_len * .08, z]))      # (where it was a moment ago)
+        if tp is not None and math.hypot(tp[0] - sx, tp[1] - sy) > 2 * r:
             wd = int(clamp(round(r * .8), 1, 4))             # (bright at its head, going up; fading behind)
             vv = min(255, v * (1.3 if not front else .8))
             for j, f in enumerate((1.0, .55, .25)):
                 a0, a1 = j / 3, (j + 1) / 3
-                d.line([(sx + (tail[0] - sx) * a0, sy + (tail[1] - sy) * a0),
-                        (sx + (tail[0] - sx) * a1, sy + (tail[1] - sy) * a1)], fill=int(vv * f), width=wd)
+                d.line([(sx + (tp[0] - sx) * a0, sy + (tp[1] - sy) * a0),
+                        (sx + (tp[0] - sx) * a1, sy + (tp[1] - sy) * a1)], fill=int(vv * f), width=wd)
         elif m["bub"][i]:
             d.ellipse([sx - r, sy - r, sx + r, sy + r], outline=int(min(255, v * 1.5)), width=1)
         else:
@@ -396,10 +408,10 @@ def trail():
     return _TRAIL
 
 
-def draw_trail(layer, cam, s, t, Rh, front, zcut):
+def draw_trail(layer, cam, s, t, Rh, front, zcut, fade=1.0):
     """The bubbles going up off it as it sinks (it going down past them)."""
     if s.get("fall"):
-        return draw_fall_trail(layer, cam, s, t, Rh, front, zcut)
+        return draw_fall_trail(layer, cam, s, t, Rh, front, zcut, fade)
     if not (s.get("sink") or s.get("drift")):
         return
     sunk, _ = sink(s, t)
@@ -415,10 +427,18 @@ def draw_trail(layer, cam, s, t, Rh, front, zcut):
         sx, sy, k = cam.pr(Pc)
         rr = max(1.5, r * k * .5)
         g = clamp((t - t0) / .15)                            # (coming out of it)
-        d.ellipse([sx - rr, sy - rr, sx + rr, sy + rr], outline=int(150 * g), width=2 if rr > 6 else 1)
+        d.ellipse([sx - rr, sy - rr, sx + rr, sy + rr], outline=int(150 * g * fade),
+                  width=2 if rr > 6 else 1)
 
 
-def draw_fall_trail(layer, cam, s, t, Rh, front, zcut):
+def rise_dist(t, t0):
+    """How far a bubble has risen: at full speed until the omen, slower after it."""
+    before = max(0.0, min(t, BURST) - t0)
+    after = max(0.0, t - max(t0, BURST))
+    return before + .45 * after
+
+
+def draw_fall_trail(layer, cam, s, t, Rh, front, zcut, fade=1.0):
     """The last shot: bubbles shed as it falls, left behind - going up (the camera going
     down too, slower)."""
     d = ImageDraw.Draw(layer)
@@ -430,14 +450,15 @@ def draw_fall_trail(layer, cam, s, t, Rh, front, zcut):
             break
         u0 = (t0 - s["t0"]) / T
         y0 = FALL[0] + FALL[1] * u0 + FALL[2] * u0 * u0
-        P = Rh @ np.array([u, v, w]) + [0.0, y0 - (sunk - sink(s, t0)[0]) - rise * (t - t0), 0.0]
+        P = Rh @ np.array([u, v, w]) + [0.0, y0 - (sunk - sink(s, t0)[0]) - rise * rise_dist(t, t0), 0.0]
         Pc = cam.to_cam(P)
         if Pc[2] < 1.5 or (Pc[2] < zcut) != front:
             continue
         sx, sy, kk = cam.pr(Pc)
         rr = max(1.5, r * kk * .5)
         g = clamp((t - t0) / .15) * (1 - clamp((t - t0 - 1.6) / .4))
-        d.ellipse([sx - rr, sy - rr, sx + rr, sy + rr], outline=int(150 * g), width=2 if rr > 6 else 1)
+        d.ellipse([sx - rr, sy - rr, sx + rr, sy + rr], outline=int(150 * g * fade),
+                  width=2 if rr > 6 else 1)
 
 
 def rings(out, P, cam, t):
@@ -731,17 +752,21 @@ def shot_frame(s, t):
     P, R = soul_pose(s, t, cam)
     Rh = cam.R.T @ R
     sunk, speed = sink(s, t)
+    tail = speed if t < BURST else 0.0                       # (the bars go; the drifting specks stay)
     back = Image.new("L", (W, H), 0)
-    draw_motes(back, cam, t, False, P[2] - 3, sunk, speed)
+    draw_motes(back, cam, t, False, P[2] - 3, sunk, speed, tail_len=tail)
     draw_trail(back, cam, s, t, Rh, False, P[2])
     out = np.clip(out.astype(np.int16) + np.asarray(back), 0, 255).astype(np.uint8)
     out = rings(out, P, cam, t)
     c = cam.pr(P + R[:, 1] * .05 * 16)                     # (its heart: a touch below its middle)
     if t >= GLOW0:
         out = halo(out, c, t, s)
-    quad = big_heart(out, P, R, cam, t, s)
+    fr = int(round(t * 60))
+    inv_until = int(round(BURST * 60)) + 60
+    blink = BURST <= t < BURST + 1.0 and ((inv_until - fr) // 4) % 2 == 1
+    quad = big_heart(out, P, R, cam, t, s, blink=blink)
     front = Image.new("L", (W, H), 0)
-    draw_motes(front, cam, t, True, P[2] - 3, sunk, speed)
+    draw_motes(front, cam, t, True, P[2] - 3, sunk, speed, tail_len=tail)
     draw_trail(front, cam, s, t, Rh, True, P[2])
     out = np.clip(out.astype(np.int16) + np.asarray(front), 0, 255).astype(np.uint8)
     if t >= BURST:
@@ -761,4 +786,11 @@ def frame(t: float) -> np.ndarray:
         g *= 1 - .85 * smooth((t - (s["t1"] - DIP_OUT)) / DIP_OUT)
     if g < 1:
         out = (out * g).astype(np.uint8)
+    a = t - BURST
+    if 0 <= a < .18:                                        # (the hit: a small shake)
+        k = (1 - a / .18) ** 2
+        dx = int(round(2.5 * k * math.sin(a * 110)))
+        dy = int(round(1.6 * k * math.sin(a * 135 + 1.0)))
+        if dx or dy:
+            out = np.roll(out, (dy, dx), axis=(0, 1))
     return out
