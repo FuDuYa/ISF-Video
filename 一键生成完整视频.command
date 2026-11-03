@@ -1,13 +1,14 @@
 #!/bin/bash
-# 一键生成完整视频（Mac）。双击运行；也可以在终端里：bash 一键生成完整视频.command 0 147
+# 一键生成预览视频（Mac）。双击运行；也可以在终端里：bash 一键生成视频.command 0 33.85
 #
 # 它会依次：
-#   1. 第一次运行时自动建好 Python 环境（.venv）；requirements.txt 变了会自动补装
-#   2. 代码、谱面、贴图有变化（或者还没规划过）就先跑走位规划 plan.py（约 2 分钟），没变就跳过
-#   3. 渲染 output/full-<开始>-<结束>s-<年月日-时分秒>.mp4（每次一个新文件，不覆盖旧的），完成后自动打开
+#   1. 拉取 GitHub 上的最新代码（只快进；你本地没提交的改动不会被覆盖，拉不下来就用本地代码继续）
+#   2. 第一次运行时自动建好 Python 环境（.venv）；requirements.txt 变了会自动补装
+#   3. 代码、谱面、贴图有变化（或者还没规划过）就先跑走位规划 plan.py（约 2 分钟），没变就跳过
+#   4. 渲染 output/preview-<开始>-<结束>s-<年月日-时分秒>.mp4（每次一个新文件，不覆盖旧的），完成后自动打开
 #
-# 时间范围（秒）：命令后面的两个参数 > render_range_full.txt 里的“开始 结束” > 默认 0 147
-# 这个脚本不执行 git pull：完整渲染用本地当前代码。
+# 时间范围（秒）：命令后面的两个参数 > render_range.txt 里的“开始 结束” > 默认 0 33.85
+# 不想拉取代码：NO_PULL=1 bash 一键生成视频.command
 
 cd "$(dirname "$0")" || exit 1
 export PATH="/opt/homebrew/bin:/usr/local/bin:/Library/Frameworks/Python.framework/Versions/Current/bin:$PATH"
@@ -15,11 +16,14 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:/Library/Frameworks/Python.framewo
 fail() {
   echo
   echo "出错了：$1"
-  echo "把上面的输出截图发给 AI 就行。"
+  echo "把上面的输出截图发给 Claude 就行。"
   exit 1
 }
 
-# ---- 1. Python 环境 ----
+# ---- 1. 拉取最新代码 ----
+
+
+# ---- 2. Python 环境 ----
 if [ ! -x .venv/bin/python ]; then
   echo "== 第一次运行：建立 Python 环境 =="
   PY=""
@@ -44,9 +48,9 @@ R0=""; R1=""
 read -r R0 R1 < render_range_full.txt 2>/dev/null
 R0="${R0%$'\r'}"; R1="${R1%$'\r'}"
 START="${1:-${R0:-0}}"
-END="${2:-${R1:-147}}"
+END="${2:-${R1:-120.00}}"
 
-# ---- 2. 走位规划（代码有变化才重跑）----
+# ---- 3. 走位规划（代码有变化才重跑）----
 mkdir -p output
 SIG="$(.venv/bin/python - <<'EOF'
 import hashlib
@@ -69,8 +73,8 @@ else
   echo "$SIG" > output/plan.sig
 fi
 
-# ---- 3. 渲染 ----
-OUT="output/full-${START}-${END}s-$(date +%Y%m%d-%H%M%S).mp4"
+# ---- 4. 渲染 ----
+OUT="output/preview-${START}-${END}s-$(date +%Y%m%d-%H%M%S).mp4"
 echo "== 渲染 ${START}–${END} 秒 -> ${OUT} =="
 .venv/bin/python src/render.py --start "$START" --end "$END" --out "$OUT" || fail "渲染失败"
 echo
