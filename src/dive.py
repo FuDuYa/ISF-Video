@@ -1498,6 +1498,7 @@ def hoops(pen, t):
         if not (zs - 40 < z < zs + Z_FAR):
             continue
         v = 235 * math.exp(-max(0.0, z - zs) / FOG) * clamp((z - (zs - 40)) / 40)
+        v *= smooth(clamp((zs + Z_FAR - z) / 500.0))       # (out of the far dark: fade in, don't pop)
         c, s_ = math.cos(ph), math.sin(ph)
         pts = []
         for u in np.linspace(0, math.tau, 41):
