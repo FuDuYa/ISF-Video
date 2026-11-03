@@ -80,6 +80,7 @@ def frame(i: int) -> np.ndarray:
         pos, hp, vis = soul_at(i)
         out = S.compose(t, _state["tl"], pos, hp, vis)
         out = cinema.apply(out, t)
+    out = bga.murk(out, t)                   # (under the ink: its view dim, lifting as it glows, till the first prompt)
     if t > FADE_START:
         g = 1 - smooth((t - FADE_START) / (FADE_END - FADE_START))
         out = (out.astype(np.float32) * g).astype(np.uint8)

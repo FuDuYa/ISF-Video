@@ -4,10 +4,10 @@ Calm: three long shots (cut on the break at M51 and at M53 - going dark, coming 
 again; so in from under the surface): in each
 the soul - huge, a little of it off the screen, lying back on a slant, a flat pixel
 heart - with the camera going slowly round it; about it the still dark of the ink,
-light coming down from far above, motes and a few bubbles drifting up. In the second
-(from the break) it sinks, from rest, ever faster - the camera going down with it,
-falling behind a little; the motes rushing up past it, bubbles going up off it, the
-light going as it goes deeper. The notes are
+light coming down from far above, motes and a few bubbles drifting up. In the first it
+sinks flat out, as it came down (the motes rushing up past it, bubbles going up off it);
+from then on only slower - in the second (from the break) slowing, smoothly; the light
+going as it goes deeper. The notes are
 only felt: a faint ring going out from it, it brightening a little (the break more).
 In the last it falls, upright, straight down through the screen, its heart beginning
 to glow; from the last notes (M54) a faint red shows in it - blood, the one pigment it
@@ -35,9 +35,9 @@ DIP_OUT, DIP_IN = .15, .25        # s: at a cut, what was there goes dark, then 
 F = 1100.0                        # px: the focal length (long: it keeps its shape, close up)
 NEAR = .5
 LIGHT = np.array([-.45, -.65, -.6]) / np.linalg.norm([-.45, -.65, -.6])   # (from up left, our side)
-SINK_A = 26.0                     # units/s/s: in the second shot it sinks, ever faster
-DRIFT = 7.0                       # units/s: in the first it sinks too - slowly, steadily
-SINK_LAG = 150                    # px: (the camera falling behind it: it slips down the screen)
+SINK_V = 62.0                     # units/s: in the first shot it sinks at full speed, from the first frame on (on
+SINK_V2 = 20.0                    # from the plunge: going down fast already); from then on only slower - the second
+                                  # slowing from that to this, smoothly (the last: slower still, FALL_V)
 FALL_V = (16.0, 5.0)              # units/s: (the last shot: the camera going down too, slowing - the ink going up past it)
 NOTES = [(C.tm(49), 1.0), (C.tm(50), 1.0), (C.tm(50.5), .6), (C.tm(51), 2.2),
          (C.tm(52), 1.0), (C.tm(52.5), .6), (C.tm(53), 1.0)]                # (when, how strong)
@@ -45,8 +45,9 @@ BREAK = C.tm(51)
 GLOW0, BURST = C.tm(53), C.tm(54)    # (the fall: it glows, from here; the red omen shows in it, from here)
 SLIDE = (C.tm(54.25), C.tm(54.875))  # (the slide: the star moves a beat after its tap)
 UP = C.tm(79)                        # (it breaks out of the surface: dive.py)
-BEATS = [b for b in C._CHART_T if BURST <= b < C.tm(81)]   # (its heart beats on every note from the omen on,
-                                                          # through the dive (dive.py) to the chorus)
+BEATS = [b for b in C._CHART_T if BURST <= b < C.tm(81) and not C.tm(55) - 1e-3 <= b < C.tm(62) - 1e-3]
+                                     # (its heart beats on every note from the omen on, through the dive (dive.py) to
+                                     # the chorus - but not in the build (M55-M61): there its red is steady)
 RISE = 140.0                         # units: how far it comes up M58-M62 (from rest, ever faster)
 SURFACE = 620.0                      # units: how far under the surface it is at M58
 RED = np.array([255.0, 38.0, 48.0])
@@ -66,16 +67,62 @@ SHOTS = [
     dict(t0=C.tm(53), t1=C.tm(55), slant=0, lie=28, turn=0, yaw=(-6, 4), pitch=(-2, 1), roll=(0, 1),
          dist=(40.0, 39.0), shift=((0, 0), (0, 0)), fall=True),
 ]
-LEAP = dict(slant=0, lie=26, turn=0, yaw=(-4, 3), pitch=(24, 8), roll=(0, 0), dist=(46.0, 290.0),
+LEAP = dict(slant=0, lie=26, turn=0, yaw=(-4, 3), pitch=(24, 8), roll=(0, 0), dist=(46.0, 460.0),
             shift=((0, 60), (0, 30)), leap=True)     # (it breaking out of the surface, up into the air, the
                                                      # camera drawing back: dive.py, on M79)
-LEAP_H = (46.0, .42)                 # units, s: (how high it leaps: 46 (1 - e^(-a/.42)) - out at once, then hanging)
-LEAP_TURN = (38.0, 16.0, -10.0)      # deg: (as it goes up it turns - round, over, aslant - to this, and stays)
+LEAP_H = (64.0, .42)                 # units, s: (how high it leaps: 64 (1 - e^(-a/.42)) - out at once, straight up
+                                     # - nothing but up - then hanging)
+LEAP_SLANT = 32.0                    # deg: (it comes out top first, aslant this far to the right, as it came up at the
+LEAP_RIGHT = .35                     # surface (dive.py), righting: fastest as it leaves the ink, upright again as it
+LEAP_OUT = LEAP_SLANT                # hangs: OUT e^(-a/.35))
 FREEZE_V = 75.0                      # units/s: (the red ring going out from where it came up - the ink setting behind it)
 
 
 def leap_h(a):
     return LEAP_H[0] * (1 - math.exp(-max(0.0, a) / LEAP_H[1]))
+
+
+def leap_lean(a):
+    """deg: aslant as it leaves the ink, righting."""
+    return LEAP_OUT * math.exp(-max(0.0, a) / LEAP_RIGHT)
+
+
+MURK = (C.tm(55), C.tm(62.375), .35)  # (the build, only: a little dark over its eyes, lifting as it goes up, gone by the
+                                       # first prompt)
+
+
+def murk_k(t):
+    """How dark it is (0..1) to its eyes: the build only."""
+    if not MURK[0] <= t < MURK[1]:
+        return 0.0
+    return MURK[2] * smooth(clamp((t - MURK[0]) / .25)) * (1 - smooth(clamp((t - MURK[0]) / (MURK[1] - MURK[0]))))
+
+
+_MG = None
+
+
+def murk(out, t):
+    """Under the ink, the soul all but blind: the whole view dim, the dark closing in from all
+    round - unevenly, slowly shifting - slow clouds of it drifting across."""
+    k = murk_k(t)
+    if k <= .005:
+        return out
+    global _MG
+    if _MG is None:
+        Y, X = np.mgrid[0:H // 2, 0:W // 2].astype(np.float32) * 2 + 1
+        dx, dy = (X - W / 2) / (W / 2), (Y - H / 2) / (H / 2)
+        _MG = (np.sqrt(dx * dx * .8 + dy * dy) / math.sqrt(1.8), np.arctan2(dy, dx), X, Y)
+    r, th, X, Y = _MG
+    rag = .06 * np.sin(th * 2 + t * .35) + .04 * np.sin(th * 3 - t * .27 + 1.3)   # (uneven, slowly shifting - no spokes)
+    r0 = .2 + .55 * (1 - k)                                  # (the clear middle: wider as it lifts)
+    edge = np.clip((r + rag * k - r0) / .5, 0, 1)
+    edge = edge * edge * (3 - 2 * edge)
+    cloud = (np.sin(X * .011 + t * .23) * np.sin(Y * .014 - t * .17 + 1.1) + np.sin(X * .006 - Y * .008 + t * .11)) * .25 + .5
+    g = (1 - .5 * k) * (1 - k * edge) * (1 - .28 * k * cloud)
+    g = np.clip(g, 0, 1).repeat(2, 0).repeat(2, 1)
+    if out.ndim == 3:
+        g = g[..., None]
+    return (out.astype(np.float32) * g).astype(np.uint8)
 
 
 def active(t: float) -> bool:
@@ -95,20 +142,27 @@ def sink(s, t):
         tau = clamp(t - s["t0"], 0, T)
         a, b = FALL_V
         return a * tau + .5 * (b - a) * tau * tau / T, a + (b - a) * tau / T
-    if s.get("drift"):                                       # (the first: going down, slowly, steadily)
-        tau = clamp(t - s["t0"], 0, s["t1"] - s["t0"])
-        return DRIFT * tau, DRIFT
-    if not s.get("sink"):
+    if not (s.get("sink") or s.get("drift")):
         return 0.0, 0.0
-    tau = clamp(t - s["t0"], 0, s["t1"] - s["t0"])
-    return .5 * SINK_A * tau * tau, SINK_A * tau
+    T = s["t1"] - s["t0"]
+    tau = clamp(t - s["t0"], 0, T)
+    if s.get("drift"):                                       # (the first: going down flat out, all the way)
+        return SINK_V * tau, SINK_V
+    u = tau / T                                              # (the second: slowing, smoothly, to SINK_V2)
+    return T * (SINK_V * u - (SINK_V - SINK_V2) * (u ** 3 - u ** 4 / 2)), \
+        SINK_V - (SINK_V - SINK_V2) * u * u * (3 - 2 * u)
+
+
+def sunk_when(s, d):
+    """When in the shot it had sunk d."""
+    ts = np.linspace(s["t0"], s["t1"], 200)
+    return float(np.interp(d, [sink(s, x)[0] for x in ts], ts))
 
 
 def depth_light(t):
-    """How much of the light from above gets down to it: less as it sinks in the
-    second shot; so it stays, deeper."""
-    s = SHOTS[1]
-    return 1 - .55 * clamp((t - s["t0"]) / (s["t1"] - s["t0"])) ** 2
+    """How much of the light from above gets down to it: less and less as it sinks
+    through the first two shots; so it stays, deeper."""
+    return 1 - .55 * clamp((t - SHOTS[0]["t0"]) / (SHOTS[1]["t1"] - SHOTS[0]["t0"])) ** 1.4
 
 
 def heartbeat(t):
@@ -155,8 +209,6 @@ class Cam:
         self.d = lerp(s["dist"], e_in)
         (ax, ay), (bx, by) = s["shift"]
         self.sx, self.sy = ax + (bx - ax) * e_in, ay + (by - ay) * e_in
-        if s.get("sink"):
-            self.sy += SINK_LAG * u * u
 
     def to_cam(self, P):
         return self.R @ (np.asarray(P, float) - self.tgt) + [0.0, 0.0, self.d]
@@ -339,7 +391,7 @@ def trail():
     global _TRAIL
     if _TRAIL is None:
         rng = np.random.default_rng(4812)
-        _TRAIL = [(.6 + .7 * k, rng.uniform(-7, 7, 2), rng.uniform(-1.5, 1.5), rng.uniform(.25, .6),
+        _TRAIL = [(.6 + 2.0 * k, rng.uniform(-7, 7, 2), rng.uniform(-1.5, 1.5), rng.uniform(.25, .6),
                    rng.uniform(2, 5)) for k in range(80)]
     return _TRAIL
 
@@ -355,7 +407,7 @@ def draw_trail(layer, cam, s, t, Rh, front, zcut):
     for d0, (u, v), w, r, rise in trail():
         if d0 > sunk:
             continue
-        t0 = s["t0"] + (d0 / DRIFT if s.get("drift") else math.sqrt(2 * d0 / SINK_A))
+        t0 = sunk_when(s, d0)
         P = Rh @ np.array([u, v, w]) + [0.0, -(sunk - d0) - rise * (t - t0), 0.0]
         Pc = cam.to_cam(P)
         if Pc[2] < 1.5 or (Pc[2] < zcut) != front:
@@ -565,10 +617,9 @@ def leap_frame(s, t):
     pool = np.where(down, pool + 60 * ring * fog, 3)
     out = np.clip(pool, 0, 255).astype(np.uint8).repeat(2, 0).repeat(2, 1)
     red = np.where(down, red, 0).astype(np.float32).repeat(2, 0).repeat(2, 1)
-    tw = smooth(clamp(a / .9)) if not pre else 0.0          # (turning as it goes up)
-    yaw, over, tilt = (v * tw for v in LEAP_TURN)
-    Rh = (_rz(math.radians(s["slant"] + tilt)) @ _rx(-math.radians(s["lie"] + over)) @
-          _ry(math.radians(s["turn"] + yaw)) @ np.diag([1, 1, -1.0]))
+    tilt = leap_lean(a) if not pre else 0.0                  # (aslant as it comes out, righting)
+    Rh = (_rz(math.radians(s["slant"] + tilt)) @ _rx(-math.radians(s["lie"])) @
+          _ry(math.radians(s["turn"])) @ np.diag([1, 1, -1.0]))
     P, R = cam.to_cam([0.0, -h, 0.0]), cam.R @ Rh
     hl = np.zeros((H, W), np.uint8)
     quad = big_heart(hl, P, R, cam, t, s)
@@ -640,6 +691,27 @@ def leap_frame(s, t):
             if q:
                 rr = max(1.5, rb.uniform(.25, .5) * q[2])
                 d2.ellipse([q[0] - rr, q[1] - rr, q[0] + rr, q[1] + rr], fill=int(255 * (1 - ab / life) ** .7))
+    if not pre and quad is not None:                         # a trail of light under it, straight down to where it
+        q0, q1 = cam.pr(cam.to_cam([0.0, 0.0, 0.0])), c      # came out; on it a star of light, its long rays thin
+        gt = 1 - clamp((a - .9) / 1.1)
+        if q0 and gt > 0:
+            d1.line([q0[:2], q1[:2]], fill=int(55 * gt), width=7)
+            n = 12
+            for j in range(n):
+                f0, f1 = j / n, (j + 1) / n
+                d1.line([(q1[0] + (q0[0] - q1[0]) * f0, q1[1] + (q0[1] - q1[1]) * f0),
+                         (q1[0] + (q0[0] - q1[0]) * f1, q1[1] + (q0[1] - q1[1]) * f1)],
+                        fill=int((240 - 110 * f0) * gt), width=2)
+        fl = (1 - clamp(a / .3)) ** 2                        # (the star: a flash as it comes out, once)
+        for ang, L in ((72, 330), (138, 250), (166, 190)) if fl > .01 else ():   # (three lines through it: six rays)
+            ca, sa = math.cos(math.radians(ang)), -math.sin(math.radians(ang))
+            for sgn in (1, -1):
+                for j in range(10):
+                    f0, f1 = j / 10, (j + 1) / 10
+                    A_ = (q1[0] + sgn * ca * L * f0, q1[1] + sgn * sa * L * f0)
+                    B_ = (q1[0] + sgn * ca * L * f1, q1[1] + sgn * sa * L * f1)
+                    d1.line([A_, B_], fill=int(80 * fl * (1 - f0)), width=8)
+                    d1.line([A_, B_], fill=int(245 * fl * (1 - f0) ** 1.2), width=2)
     bl, sp = np.asarray(blood, np.float32) / 255, np.asarray(splash)
     if quad is not None:                                     # (the splash and the blood round it, not over it)
         bl, sp = np.where(vis, 0, bl), np.where(vis, 0, sp)

@@ -3690,7 +3690,8 @@ class SloshWave(Attack):
     STEP = .05          # s each step takes
 
     def __init__(self, rect, way, t_pool, steps, gap_y, gap_from=None, seed=0, dry=1.0, gap=None,
-                 outside=False, hz=2.0, linger=1.0, under=False):
+                 outside=False, hz=2.0, linger=1.0, under=False, glow=False):
+        self.glow = glow                                   # its cue: a flash of light at its gap (not a pale wall)
         self.x0, self.y0, self.x1, self.y1 = rect
         self.way, self.tp, self.steps = way, t_pool, list(steps)
         self.dry = dry                                     # x how fast its mark dries (close behind each other: faster)
@@ -3750,6 +3751,64 @@ class SloshWave(Attack):
                 pts_b.append((xb, y))
             c.poly(layer, pts_f + pts_b[::-1], val)
 
+    def glint(self, c, t):
+        """The cue before it slams on (instead of lying pooled there, a pale wall): its gap
+        flashes with light at the edge it will come from - the stains round the gap washed
+        out white, a four-pointed glint in it (white heart, grey arms: the upright ones reach
+        the gap's ends, the long one points the way it will come), a ring flung out as it
+        flares up, flickering at the last. Only on paper that is not black (never over ink
+        that still hurts), and nothing of it off the paper."""
+        k = c.k
+        a = t - self.tp
+        env = 1 - (1 - clamp(a / .06)) ** 2                # it flares up
+        late = self.steps[0] - t < .075
+        flick = (1.0 if int(t * 60) % 4 < 2 else .4) if late else 1.0
+        s = 1 if self.way > 0 else -1                      # into the paper
+        ex = self.x0 if s > 0 else self.x1
+        gy, g = self.gap(t), self.G / 2
+        cx, cy = ex + s * 8, gy
+        Wl, Hl = c.size
+        img = Image.new("L", (Wl, Hl))                     # its arms, drawn apart (then only where not black)
+        keep = c.d["art"]
+        c.d["art"] = ImageDraw.Draw(img)
+        try:
+            v = int(150 * env * flick)
+            L, w, up = 34 + 40 * env, 4.5, g + 4
+            c.poly("art", [(cx, cy - w), (cx + s * L, cy), (cx, cy + w), (cx - s * 12, cy)], v)
+            c.poly("art", [(cx - w, cy), (cx, cy - up), (cx + w, cy), (cx, cy + up)], v)
+            for dy in (-1, 1):                             # (two short ones between, into the paper)
+                c.line("art", [(cx + s * 5, cy + dy * 5), (cx + s * (5 + 13 * env), cy + dy * (5 + 13 * env))],
+                       3, int(v * .8))
+            q = a / .14
+            if 0 <= q < 1:                                 # a ring flung out as it flares up
+                c.ring("art", cx, cy, 8 + 50 * out_cubic(q), 2, int(130 * (1 - q)))
+        finally:
+            c.d["art"] = keep
+        rays = np.asarray(img).astype(np.float32)
+        art = np.asarray(c.art).astype(np.float32)
+        xs = (np.arange(Wl) + .5) * k - c.ox               # (the sheet's frame)
+        ys = (np.arange(Hl) + .5) * k - c.oy
+        RX, RY = 80 + 40 * env, g + 44
+        dx = (xs[None, :] - cx) / RX
+        dy = (ys[:, None] - cy) / RY
+        r2 = dx * dx + dy * dy
+        lit = np.clip(1.25 * (1 - r2), 0, 1) ** .8 * env * (1.0 if flick == 1 else .75)
+        lit *= ((xs[None, :] - ex) * s > -2)               # (not past its edge)
+        core = (dx * RX) ** 2 + (dy * RY) ** 2 < 5.5 ** 2  # its white heart
+        out = np.maximum(art * (1 - lit), rays * (1 - core))
+        out = np.where(art < 200, out, art)
+        c.art.paste(Image.fromarray(np.clip(out, 0, 255).astype(np.uint8)))
+        # and a little of the light spills out over the edge into the dark (only off the paper)
+        pm = c.paper()
+        top = np.asarray(c.top)
+        sx, sy = (xs + c.ox) / k, (ys + c.oy) / k          # (layer pixels, for the paper mask)
+        hr = np.hypot((xs[None, :] - ex) / 30.0, (ys[:, None] - cy) / (g + 12.0))
+        halo = np.clip(1 - hr, 0, 1) ** 1.5 * 150 * env * (1.0 if flick == 1 else .6)
+        halo *= ((xs[None, :] - ex) * s < 2)
+        add = (halo > 4) & (pm[:Hl, :Wl] == 0) & (top == 0)
+        if add.any():
+            c.top.paste(Image.fromarray(np.where(add, halo, top).astype(np.uint8)))
+
     def mark(self, c, t, d):
         """Where it has been: the stretch it swept stays inked - pure black where it has
         just passed (and that hurts), then a trailing stain drying off behind it, the
@@ -3780,6 +3839,9 @@ class SloshWave(Attack):
             u = clamp((t - self.tp) / max(.05, self.steps[0] - self.tp))
             flick = .7 + .3 * math.sin(t * 60) if u > .7 else 1.0
             self.wall(c, t, -4 - 150 * (1 - u) ** 2, fade_gray(215 * flick, min(1.0, u * 4)), "top", free=True)
+            return
+        if t < self.steps[0] and self.glow:                # its cue: its gap lights up at the edge it comes from
+            self.glint(c, t)
             return
         if t < self.steps[0]:                              # pooled at its edge: pale, the gap showing
             d = self.reach(t)

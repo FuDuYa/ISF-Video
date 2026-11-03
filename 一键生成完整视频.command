@@ -45,7 +45,7 @@ fi
 
 # ---- 时间范围 ----
 R0=""; R1=""
-read -r R0 R1 < render_range.txt 2>/dev/null
+read -r R0 R1 < render_range_full.txt 2>/dev/null
 R0="${R0%$'\r'}"; R1="${R1%$'\r'}"
 START="${1:-${R0:-0}}"
 END="${2:-${R1:-120.00}}"
