@@ -3753,16 +3753,16 @@ class SloshWave(Attack):
 
     def glint(self, c, t):
         """The cue before it slams on (instead of lying pooled there, a pale wall): its gap
-        flashes with light at the edge it will come from - the stains round the gap washed
-        out white, a four-pointed glint in it (white heart, grey arms: the upright ones reach
-        the gap's ends, the long one points the way it will come), a ring flung out as it
-        flares up, flickering at the last. Only on paper that is not black (never over ink
-        that still hurts), and nothing of it off the paper."""
+        fades up at the edge it will come from - the stains round the gap washed out white,
+        a four-pointed glint in it (white heart and arms: the upright ones reach the gap's
+        ends, the long one points the way it will come), a ring flung out as it rises, all
+        of it fading out again before the wall lands. Only on paper that is not black
+        (never over ink that still hurts), and nothing of it off the paper."""
         k = c.k
         a = t - self.tp
-        env = 1 - (1 - clamp(a / .06)) ** 2                # it flares up
-        late = self.steps[0] - t < .075
-        flick = (1.0 if int(t * 60) % 4 < 2 else .4) if late else 1.0
+        env = smooth(clamp(a / .08))                       # it fades up...
+        fade = smooth(clamp((self.steps[0] - t) / .10))    # ...and down again before it hits
+        pulse = env * fade
         s = 1 if self.way > 0 else -1                      # into the paper
         ex = self.x0 if s > 0 else self.x1
         gy, g = self.gap(t), self.G / 2
@@ -3772,7 +3772,7 @@ class SloshWave(Attack):
         keep = c.d["art"]
         c.d["art"] = ImageDraw.Draw(img)
         try:
-            v = int(150 * env * flick)
+            v = int(110 * pulse)
             L, w, up = 34 + 40 * env, 4.5, g + 4
             c.poly("art", [(cx, cy - w), (cx + s * L, cy), (cx, cy + w), (cx - s * 12, cy)], v)
             c.poly("art", [(cx - w, cy), (cx, cy - up), (cx + w, cy), (cx, cy + up)], v)
@@ -3781,7 +3781,7 @@ class SloshWave(Attack):
                        3, int(v * .8))
             q = a / .14
             if 0 <= q < 1:                                 # a ring flung out as it flares up
-                c.ring("art", cx, cy, 8 + 50 * out_cubic(q), 2, int(130 * (1 - q)))
+                c.ring("art", cx, cy, 8 + 50 * out_cubic(q), 2, int(95 * (1 - q) * pulse))
         finally:
             c.d["art"] = keep
         rays = np.asarray(img).astype(np.float32)
@@ -3792,7 +3792,7 @@ class SloshWave(Attack):
         dx = (xs[None, :] - cx) / RX
         dy = (ys[:, None] - cy) / RY
         r2 = dx * dx + dy * dy
-        lit = np.clip(1.25 * (1 - r2), 0, 1) ** .8 * env * (1.0 if flick == 1 else .75)
+        lit = np.clip(1.25 * (1 - r2), 0, 1) ** .8 * pulse
         lit *= ((xs[None, :] - ex) * s > -2)               # (not past its edge)
         core = (dx * RX) ** 2 + (dy * RY) ** 2 < 5.5 ** 2  # its white heart
         out = np.maximum(art * (1 - lit), rays * (1 - core))
@@ -3803,7 +3803,7 @@ class SloshWave(Attack):
         top = np.asarray(c.top)
         sx, sy = (xs + c.ox) / k, (ys + c.oy) / k          # (layer pixels, for the paper mask)
         hr = np.hypot((xs[None, :] - ex) / 30.0, (ys[:, None] - cy) / (g + 12.0))
-        halo = np.clip(1 - hr, 0, 1) ** 1.5 * 150 * env * (1.0 if flick == 1 else .6)
+        halo = np.clip(1 - hr, 0, 1) ** 1.5 * 125 * pulse
         halo *= ((xs[None, :] - ex) * s < 2)
         add = (halo > 4) & (pm[:Hl, :Wl] == 0) & (top == 0)
         if add.any():

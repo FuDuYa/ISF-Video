@@ -1499,7 +1499,7 @@ def add_sink(tl: Timeline, notes):
         for j in range(2):
             go = th + 4 * j * s16
             gy = float(np.clip(track(go + s16), lo, hi))   # (it is over the middle of the sheet a step on)
-            t_pool = FOLDS[-1] - .02 if h == j == 0 else go - 2 * s16
+            t_pool = FOLDS[-1] - .12 if h == j == 0 else go - 4 * s16
             atts.append(A.SloshWave(rect, way, t_pool, [go] + [go + k * s16 for k in range(4)], gy,
                                     seed=4400 + 2 * h + j, dry=2.6, linger=2.2, gap=SLOSH_GAP, under=True, hz=0.0,
                                     glow=True))
